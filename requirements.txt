@@ -5,4 +5,5 @@ scikit-learn
 streamlit
 matplotlib
 seaborn
-river  # For ADWIN and other streaming algorithms
+river
+tqdm
