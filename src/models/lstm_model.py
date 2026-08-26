@@ -3,7 +3,6 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout, Input, Bidirectional
 from tensorflow.keras.optimizers import Adam
 
-
 def build_lstm_model(seq_len, num_features, learning_rate=0.001):
 
     model = Sequential([
@@ -33,7 +32,6 @@ def build_lstm_model(seq_len, num_features, learning_rate=0.001):
         ]
     )
     return model
-
 
 if __name__ == "__main__":
     model = build_lstm_model(seq_len=5, num_features=10)
