@@ -12,10 +12,12 @@ from memory.balanced import BalancedReplayBuffer
 
 
 # ---------------------------------------------------------------------------
-# Class weight helper
+# Hyperparameters
 # ---------------------------------------------------------------------------
-FRAUD_RATIO = 0.03  # Must match StreamingDataGenerator fraud_ratio
-CLASS_WEIGHT = {0: 1.0, 1: round(1.0 / FRAUD_RATIO)}  # {normal: 1, fraud: ~33}
+FRAUD_RATIO   = 0.03                          # Must match StreamingDataGenerator
+CLASS_WEIGHT  = {0: 1.0, 1: round(1.0 / FRAUD_RATIO)}  # {normal:1, fraud:~33}
+BASE_LR       = 0.001
+DRIFT_LR      = 0.005   # 5× base – fast adaptation immediately after drift
 
 
 class ContinualLearner:
@@ -45,8 +47,14 @@ class ContinualLearner:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _train(self, X, y):
-        """Train one step with class weighting to handle fraud imbalance."""
+    def _set_lr(self, lr: float):
+        """Dynamically change the optimizer's learning rate."""
+        self.model.optimizer.learning_rate = lr
+
+    def _train(self, X, y, lr=None):
+        """Train one step with class weighting. Optionally set a custom LR."""
+        if lr is not None:
+            self._set_lr(lr)
         self.model.train_on_batch(X, y, class_weight=CLASS_WEIGHT)
 
     def _batch_metrics(self, preds_binary, y):
@@ -136,23 +144,23 @@ class ContinualLearner:
                       f"(recall={recall:.3f}, f1={f1:.3f}) Adapting...")
                 self.drift_events.append(batch_idx)
 
+                # --- KEY FIX: wipe stale old-concept patterns from memory ---
+                # Without this, replaying old fraud examples teaches the model
+                # two contradictory fraud concepts simultaneously.
                 if self.memory:
-                    # Fine-tune on mixed memory + current batch (5 steps)
-                    for _ in range(5):
-                        X_mem, y_mem = self.memory.sample(batch_size * 2)
-                        if len(X_mem) > 0:
-                            X_train = np.vstack((X_mem, X))
-                            y_train  = np.vstack((y_mem, y))
-                            self._train(X_train, y_train)
-                else:
-                    # Naive fine-tune (no memory – static baseline never
-                    # reaches here, but kept for completeness)
-                    for _ in range(5):
-                        self._train(X, y)
+                    self.memory.clear()
 
-            # --- Standard online update (every batch) ---
+                # Fine-tune at elevated LR on ONLY the current batch
+                # (new concept data). Memory will refill over next batches.
+                for _ in range(5):
+                    self._train(X, y, lr=DRIFT_LR)
+
+                # Restore base LR for stable online learning
+                self._set_lr(BASE_LR)
+
+            # --- Standard online update (every non-drift batch) ---
             else:
-                self._train(X, y)
+                self._train(X, y, lr=BASE_LR)
 
         return pd.DataFrame(self.metrics_log), self.drift_events
 

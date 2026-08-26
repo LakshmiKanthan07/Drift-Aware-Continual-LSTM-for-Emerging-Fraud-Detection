@@ -59,5 +59,13 @@ class BalancedReplayBuffer:
         y_batch = np.array([item[1] for item in batch])
         return X_batch, y_batch
 
+    def clear(self):
+        """Clears all samples from both sub-buffers.
+        Call this on drift detection to wipe stale fraud patterns so the
+        buffer refills with data from the new fraud concept.
+        """
+        self.normal_buffer = []
+        self.fraud_buffer  = []
+
     def __len__(self):
         return len(self.normal_buffer) + len(self.fraud_buffer)

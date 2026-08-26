@@ -31,5 +31,12 @@ class RandomReplayBuffer:
         y_batch = np.array([item[1] for item in batch])
         return X_batch, y_batch
 
+    def clear(self):
+        """Clears all samples from the buffer.
+        Call this on drift detection to wipe stale fraud patterns so the
+        buffer refills with data from the new fraud concept.
+        """
+        self.buffer = []
+
     def __len__(self):
         return len(self.buffer)

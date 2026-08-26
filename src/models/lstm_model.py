@@ -1,24 +1,25 @@
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Input, Bidirectional
 from tensorflow.keras.optimizers import Adam
 
 
 def build_lstm_model(seq_len, num_features, learning_rate=0.001):
-    """
-    Builds and compiles an LSTM model for binary fraud classification.
 
-    Uses a proper Input layer (replaces deprecated input_shape on LSTM)
-    to silence Keras warnings. Compiled with standard binary cross-entropy;
-    class weighting is applied at training time in the learner.
-    """
     model = Sequential([
         Input(shape=(seq_len, num_features)),
-        LSTM(64, return_sequences=False),
+
+        # First BiLSTM layer – returns full sequence for the second layer
+        Bidirectional(LSTM(64, return_sequences=True)),
         Dropout(0.2),
+
+        # Second BiLSTM layer – condenses to a single context vector
+        Bidirectional(LSTM(32, return_sequences=False)),
+        Dropout(0.2),
+
         Dense(32, activation='relu'),
-        Dropout(0.2),
-        Dense(1, activation='sigmoid')
+        Dropout(0.1),
+        Dense(1, activation='sigmoid'),
     ])
 
     optimizer = Adam(learning_rate=learning_rate)
