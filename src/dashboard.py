@@ -2,96 +2,283 @@ import streamlit as st
 import pandas as pd
 import glob
 import os
+import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import seaborn as sns
 
-st.set_page_config(page_title="Drift-Aware LSTM Dashboard", layout="wide")
+st.set_page_config(
+    page_title="Drift-Aware LSTM Dashboard",
+    page_icon="🛡️",
+    layout="wide"
+)
 
+# --------------------------------------------------------------------------- #
+#  Page Header                                                                  #
+# --------------------------------------------------------------------------- #
 st.title("🛡️ Drift-Aware Continual LSTM for Fraud Detection")
-st.markdown("Visualizing model performance and concept drift adaptation over time.")
+st.markdown(
+    "Comparing a **Static Baseline** against two continual-learning "
+    "configurations that detect and adapt to emerging fraud patterns."
+)
 
-# Load data
+# --------------------------------------------------------------------------- #
+#  Data Loading                                                                 #
+# --------------------------------------------------------------------------- #
 data_dir = os.path.join(os.path.dirname(__file__), '..', 'data')
+
+PALETTE = {
+    'Static_Baseline':             '#e74c3c',
+    'Config_A_ADWIN_and_Random':   '#3498db',
+    'Config_B_Window_and_Balanced':'#2ecc71',
+}
+LABELS = {
+    'Static_Baseline':             'Static Baseline',
+    'Config_A_ADWIN_and_Random':   'Config A  (ADWIN + Random)',
+    'Config_B_Window_and_Balanced':'Config B  (Window + Balanced)',
+}
+
 
 @st.cache_data
 def load_data():
     metric_files = glob.glob(os.path.join(data_dir, '*_metrics.csv'))
-    drift_files = glob.glob(os.path.join(data_dir, '*_drifts.csv'))
-    
+    drift_files  = glob.glob(os.path.join(data_dir, '*_drifts.csv'))
+
     if not metric_files:
         return None, None
-        
+
     metrics = {}
-    drifts = {}
-    
+    drifts  = {}
+
     for f in metric_files:
-        name = os.path.basename(f).replace('_metrics.csv', '')
-        metrics[name] = pd.read_csv(f)
-        
+        key = os.path.basename(f).replace('_metrics.csv', '')
+        metrics[key] = pd.read_csv(f)
+
     for f in drift_files:
-        name = os.path.basename(f).replace('_drifts.csv', '')
-        drifts[name] = pd.read_csv(f)['drift_batch'].tolist()
-        
+        key = os.path.basename(f).replace('_drifts.csv', '')
+        raw = pd.read_csv(f)['drift_batch'].dropna().tolist()
+        drifts[key] = [int(d) for d in raw]
+
     return metrics, drifts
+
 
 metrics, drifts = load_data()
 
 if not metrics:
-    st.warning("No data found. Please run the simulation first (`python src/continual_learner.py`).")
-else:
-    st.sidebar.header("Configuration")
-    
-    # Calculate rolling averages for smoother plots
-    window_size = st.sidebar.slider("Smoothing Window (Batches)", min_value=10, max_value=200, value=50)
-    
-    selected_metric = st.sidebar.selectbox("Metric to visualize", ['f1', 'accuracy', 'precision', 'recall'])
-    
-    st.subheader(f"Performance over Time: {selected_metric.capitalize()}")
-    
-    fig, ax = plt.subplots(figsize=(15, 6))
-    colors = ['red', 'blue', 'green']
-    
-    # We want to plot all models together for comparison
-    names = list(metrics.keys())
-    for i, name in enumerate(names):
-        df = metrics[name].copy()
-        
-        # Smooth metric
-        df['smoothed'] = df[selected_metric].rolling(window=window_size, min_periods=1).mean()
-        
-        sns.lineplot(data=df, x='batch', y='smoothed', label=name, color=colors[i%len(colors)], ax=ax, alpha=0.8)
-        
-        # Plot drift points (using drifts from the best performing model just to show where they happened,
-        # or plot for each if they detect differently)
-        if name in drifts and len(drifts[name]) > 0:
-            for d in drifts[name]:
-                 ax.axvline(x=d, color=colors[i%len(colors)], linestyle='--', alpha=0.3)
-                 
-    ax.set_xlabel("Batch Number (Time)")
-    ax.set_ylabel(selected_metric.capitalize())
-    ax.set_title(f"{selected_metric.capitalize()} Score over Time across Data Stream")
-    
-    st.pyplot(fig)
-    
-    st.markdown("---")
-    st.subheader("📊 Infographics & Comparison")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    for i, name in enumerate(names):
-        df = metrics[name]
-        avg_f1 = df['f1'].mean()
-        final_f1 = df['f1'].tail(100).mean() # Average over last 100 batches
-        drift_count = len(drifts[name]) if name in drifts else 0
-        
-        with [col1, col2, col3][i]:
-            st.metric(label=f"{name} Overall F1", value=f"{avg_f1:.3f}")
-            st.metric(label=f"Final 100-Batch F1", value=f"{final_f1:.3f}")
-            st.metric(label=f"Drifts Detected", value=drift_count)
-            
-    st.markdown("""
-    ### 💡 Insights
-    *   **Static Baseline**: Performance degrades permanently after the first concept drift because it never updates.
-    *   **Config A (ADWIN + Random)**: Detects drift dynamically and updates, recovering performance. However, random sampling might forget older, rare fraud patterns.
-    *   **Config B (Window + Balanced)**: Balances the memory, leading to more robust recovery and higher average F1 scores, especially on highly imbalanced fraud data.
-    """)
+    st.warning(
+        "No data found. Run the simulation first:\n\n"
+        "```\ncd src\npython continual_learner.py\n```"
+    )
+    st.stop()
+
+names = list(metrics.keys())
+
+# --------------------------------------------------------------------------- #
+#  Sidebar                                                                      #
+# --------------------------------------------------------------------------- #
+st.sidebar.header("⚙️ Controls")
+window_size     = st.sidebar.slider("Smoothing window (batches)", 5, 200, 50)
+selected_metric = st.sidebar.selectbox(
+    "Primary metric to plot",
+    ['recall', 'f1', 'precision', 'accuracy'],
+)
+show_drift_lines = st.sidebar.checkbox("Show drift event markers", value=True)
+
+# --------------------------------------------------------------------------- #
+#  KPI Cards                                                                    #
+# --------------------------------------------------------------------------- #
+st.markdown("---")
+st.subheader("📈 Summary Statistics (last 100 batches)")
+
+kpi_cols = st.columns(len(names))
+for col, name in zip(kpi_cols, names):
+    df   = metrics[name]
+    tail = df.tail(100)
+    label = LABELS.get(name, name)
+    color = PALETTE.get(name, '#999999')
+
+    avg_recall = tail['recall'].mean()
+    avg_f1     = tail['f1'].mean()
+    n_drifts   = len(drifts.get(name, []))
+
+    with col:
+        st.markdown(
+            f"<h4 style='color:{color}'>{label}</h4>",
+            unsafe_allow_html=True,
+        )
+        st.metric("Avg Recall (last 100 batches)", f"{avg_recall:.3f}")
+        st.metric("Avg F1 (last 100 batches)",     f"{avg_f1:.3f}")
+        st.metric("Drift events detected",          n_drifts)
+
+# --------------------------------------------------------------------------- #
+#  Time-series plot                                                             #
+# --------------------------------------------------------------------------- #
+st.markdown("---")
+st.subheader(f"📊 {selected_metric.capitalize()} over Time")
+
+fig, ax = plt.subplots(figsize=(16, 5))
+fig.patch.set_facecolor('#0e1117')
+ax.set_facecolor('#0e1117')
+
+for name in names:
+    df    = metrics[name].copy()
+    color = PALETTE.get(name, '#999999')
+    label = LABELS.get(name, name)
+
+    df['smoothed'] = df[selected_metric].rolling(
+        window=window_size, min_periods=1
+    ).mean()
+
+    ax.plot(df['batch'], df['smoothed'], label=label, color=color,
+            linewidth=1.8, alpha=0.9)
+
+    if show_drift_lines:
+        for d in drifts.get(name, []):
+            ax.axvline(x=d, color=color, linestyle='--', alpha=0.4, linewidth=1)
+
+ax.set_xlabel("Batch Number", color='white')
+ax.set_ylabel(selected_metric.capitalize(), color='white')
+ax.tick_params(colors='white')
+ax.spines['bottom'].set_color('#444')
+ax.spines['left'].set_color('#444')
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+ax.legend(facecolor='#1a1a2e', labelcolor='white')
+fig.tight_layout()
+st.pyplot(fig)
+
+# --------------------------------------------------------------------------- #
+#  Recall + F1 side-by-side                                                    #
+# --------------------------------------------------------------------------- #
+st.markdown("---")
+st.subheader("🔍 Recall vs F1 (fraud-focused)")
+
+fig2, axes = plt.subplots(1, 2, figsize=(16, 4), sharey=False)
+fig2.patch.set_facecolor('#0e1117')
+
+for ax, metric_name in zip(axes, ['recall', 'f1']):
+    ax.set_facecolor('#0e1117')
+    for name in names:
+        df    = metrics[name].copy()
+        color = PALETTE.get(name, '#999999')
+        label = LABELS.get(name, name)
+
+        df['smoothed'] = df[metric_name].rolling(
+            window=window_size, min_periods=1
+        ).mean()
+        ax.plot(df['batch'], df['smoothed'], label=label,
+                color=color, linewidth=1.6, alpha=0.9)
+
+        if show_drift_lines:
+            for d in drifts.get(name, []):
+                ax.axvline(x=d, color=color, linestyle='--',
+                           alpha=0.35, linewidth=1)
+
+    ax.set_title(metric_name.capitalize(), color='white')
+    ax.set_xlabel("Batch", color='white')
+    ax.tick_params(colors='white')
+    ax.spines['bottom'].set_color('#444')
+    ax.spines['left'].set_color('#444')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.legend(facecolor='#1a1a2e', labelcolor='white', fontsize=8)
+
+fig2.tight_layout()
+st.pyplot(fig2)
+
+# --------------------------------------------------------------------------- #
+#  Comparison Heatmap                                                           #
+# --------------------------------------------------------------------------- #
+st.markdown("---")
+st.subheader("🗺️ Final Performance Heatmap (last 100 batches)")
+
+heatmap_data = {}
+for name in names:
+    tail = metrics[name].tail(100)
+    heatmap_data[LABELS.get(name, name)] = {
+        'Recall':    round(tail['recall'].mean(), 4),
+        'F1':        round(tail['f1'].mean(), 4),
+        'Precision': round(tail['precision'].mean(), 4),
+        'Accuracy':  round(tail['accuracy'].mean(), 4),
+    }
+
+hm_df = pd.DataFrame(heatmap_data).T
+
+fig3, ax3 = plt.subplots(figsize=(10, 3))
+fig3.patch.set_facecolor('#0e1117')
+sns.heatmap(
+    hm_df, annot=True, fmt='.3f', cmap='YlGn',
+    linewidths=0.5, ax=ax3, cbar_kws={'shrink': 0.7}
+)
+ax3.set_title("Mean metric value over last 100 batches", color='white', pad=10)
+ax3.tick_params(colors='white')
+fig3.tight_layout()
+st.pyplot(fig3)
+
+# --------------------------------------------------------------------------- #
+#  Drift Event Timeline                                                         #
+# --------------------------------------------------------------------------- #
+st.markdown("---")
+st.subheader("⚡ Drift Event Timeline")
+
+drift_cols = st.columns(len(names))
+for col, name in zip(drift_cols, names):
+    label  = LABELS.get(name, name)
+    color  = PALETTE.get(name, '#999999')
+    events = drifts.get(name, [])
+
+    with col:
+        st.markdown(
+            f"<h5 style='color:{color}'>{label}</h5>",
+            unsafe_allow_html=True,
+        )
+        if events:
+            drift_df = pd.DataFrame({'Drift at batch': events})
+            st.dataframe(drift_df, hide_index=True, use_container_width=True)
+        else:
+            if name == 'Static_Baseline':
+                st.info("No detector – expected.")
+            else:
+                st.warning("No drifts detected.")
+
+# --------------------------------------------------------------------------- #
+#  Dynamic Insights                                                             #
+# --------------------------------------------------------------------------- #
+st.markdown("---")
+st.subheader("💡 Insights")
+
+def _fmt(val):
+    return f"{val:.3f}"
+
+# Build insight strings dynamically from the data
+bl_recall = metrics.get('Static_Baseline', pd.DataFrame({'recall': [0]}))['recall'].mean()
+ca_recall  = metrics.get('Config_A_ADWIN_and_Random', pd.DataFrame({'recall': [0]}))['recall'].mean()
+cb_recall  = metrics.get('Config_B_Window_and_Balanced', pd.DataFrame({'recall': [0]}))['recall'].mean()
+
+ca_drifts = len(drifts.get('Config_A_ADWIN_and_Random', []))
+cb_drifts = len(drifts.get('Config_B_Window_and_Balanced', []))
+
+best = max(
+    [('Static Baseline', bl_recall),
+     ('Config A', ca_recall),
+     ('Config B', cb_recall)],
+    key=lambda x: x[1]
+)
+
+st.markdown(f"""
+| Config | Avg Recall | Drifts Detected |
+|---|---|---|
+| Static Baseline | {_fmt(bl_recall)} | 0 (no detector) |
+| Config A (ADWIN + Random) | {_fmt(ca_recall)} | {ca_drifts} |
+| Config B (Window + Balanced) | {_fmt(cb_recall)} | {cb_drifts} |
+
+- **Best average recall**: **{best[0]}** ({_fmt(best[1])})
+- **Static Baseline** has no drift detector, so it never adapts. Its recall degrades
+  after each concept drift injection as the fraud pattern changes.
+- **Config A (ADWIN + Random)** uses ADWIN on the F1 stream — sensitive to statistical
+  mean shifts, fast to react, but random memory may forget older fraud patterns.
+- **Config B (Window + Balanced)** uses a sliding-window recall monitor and a balanced
+  memory buffer — more stable recovery with better retention of minority-class patterns.
+- Drifts marked as **dashed vertical lines** on the charts above correspond to the exact
+  batches where the learner detected a shift and triggered model adaptation.
+""")
