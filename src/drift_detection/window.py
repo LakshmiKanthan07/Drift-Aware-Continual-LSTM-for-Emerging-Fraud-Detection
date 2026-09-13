@@ -3,35 +3,45 @@ import numpy as np
 
 
 class WindowDriftDetector:
-    def __init__(self, window_size=100, threshold_drop=0.08):
+    def __init__(self, window_size=200, threshold_drop=0.15, cooldown=50):
         """
         Detects drift by monitoring per-batch recall over a sliding window.
-        Recall is a fraud-sensitive metric: even a small drop signals that
-        the model is missing fraudulent transactions.
 
-        If the current window's mean recall drops by `threshold_drop` compared
-        to the historical maximum, a drift is flagged.
+        Improvements over v1:
+        - Larger window (200 batches) → more stable mean recall estimate,
+          preventing false alarms from natural batch-to-batch variance.
+        - Higher threshold_drop (0.15) → only genuine large drops trigger drift,
+          not normal noise in sparse-fraud batches.
+        - Cooldown period (50 batches) → after a drift event, detection is
+          suspended for 50 batches so the model can stabilize before the
+          next alert. This prevents the 'chain-trigger' problem where one
+          drift spawns dozens of consecutive re-adaptations.
 
         Args:
-            window_size:    Number of recent batches to keep in the window.
-                            100 batches is enough to get a stable mean while
-                            still reacting quickly to pattern shifts.
-            threshold_drop: Recall drop (absolute) needed to trigger a drift.
-                            0.08 is sensitive enough for recall without too many
-                            false positives.
+            window_size:     Number of recent batches in the sliding window.
+            threshold_drop:  Absolute recall drop from historical max to flag.
+            cooldown:        Batches to wait after a drift before re-enabling detection.
         """
-        self.window_size = window_size
+        self.window_size    = window_size
         self.threshold_drop = threshold_drop
-        self.window = collections.deque(maxlen=window_size)
+        self.cooldown       = cooldown
 
+        self.window         = collections.deque(maxlen=window_size)
         self.historical_max = 0.0
         self.drift_detected = False
+        self._cooldown_left = 0          # Batches remaining in cooldown
 
     def update(self, batch_recall: float) -> bool:
         """
         batch_recall: recall score for the current batch (0.0 – 1.0).
-        Returns True if drift is detected.
+        Returns True if a genuine drift is detected.
         """
+        # Respect cooldown — do not re-trigger while adapting
+        if self._cooldown_left > 0:
+            self._cooldown_left -= 1
+            self.window.append(batch_recall)
+            return False
+
         self.window.append(batch_recall)
 
         # Need a full window before making a decision
@@ -53,7 +63,8 @@ class WindowDriftDetector:
         return False
 
     def reset(self):
-        """Resets after a drift is handled, keeping historical_max for continuity."""
+        """Resets after a drift is handled; starts cooldown period."""
         self.window.clear()
-        # Keep historical_max so we don't immediately re-trigger on the next window
-        self.drift_detected = False
+        self.drift_detected  = False
+        self._cooldown_left  = self.cooldown   # Engage cooldown
+        # Keep historical_max so we don't immediately re-trigger

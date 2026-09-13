@@ -4,15 +4,21 @@ __pycache__/
 *$py.class
 *.so
 
-# Virtual environment
+# Virtual environments
 venv/
 env/
 ENV/
 env.bak/
 venv.bak/
 
-# Project data and metrics (optional, depending on if you want to commit them)
-# data/
+# Large datasets
+data/*.zip
+data/train_*.csv
+data/test_*.csv
+data/*.parquet
+
+# Generated data
+synthetic data/
 
 # Streamlit
 .streamlit/
@@ -21,3 +27,7 @@ venv.bak/
 .vscode/
 .idea/
 *.swp
+
+# Logs / temporary files
+*.log
+.ipynb_checkpoints/

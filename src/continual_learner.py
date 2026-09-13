@@ -3,7 +3,8 @@ import random
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
-from data_generator import StreamingDataGenerator
+from sklearn.metrics import roc_auc_score, cohen_kappa_score, average_precision_score
+from realtime_generator import RealtimeDataGenerator
 from models.lstm_model import build_lstm_model
 from drift_detection.adwin import ADWINDriftDetector
 from drift_detection.window import WindowDriftDetector
@@ -14,15 +15,15 @@ from memory.balanced import BalancedReplayBuffer
 # ---------------------------------------------------------------------------
 # Hyperparameters
 # ---------------------------------------------------------------------------
-FRAUD_RATIO   = 0.03                          # Must match StreamingDataGenerator
-CLASS_WEIGHT  = {0: 1.0, 1: round(1.0 / FRAUD_RATIO)}  # {normal:1, fraud:~33}
+FRAUD_RATIO   = 0.035                          # Approx ratio for IEEE dataset
+CLASS_WEIGHT  = {0: 1.0, 1: round(1.0 / FRAUD_RATIO)}  # {normal:1, fraud:~29}
 BASE_LR       = 0.001
 DRIFT_LR      = 0.005   # 5× base – fast adaptation immediately after drift
 
 
 class ContinualLearner:
     def __init__(self, config_name, detector_type, memory_type,
-                 seq_len=5, num_features=10):
+                 seq_len=1, num_features=431):
         self.config_name = config_name
         self.model = build_lstm_model(seq_len, num_features)
 
@@ -52,13 +53,13 @@ class ContinualLearner:
         self.model.optimizer.learning_rate = lr
 
     def _train(self, X, y, lr=None):
-        """Train one step with class weighting. Optionally set a custom LR."""
+        """Train one step. Optionally set a custom LR."""
         if lr is not None:
             self._set_lr(lr)
-        self.model.train_on_batch(X, y, class_weight=CLASS_WEIGHT)
+        self.model.train_on_batch(X, y)
 
-    def _batch_metrics(self, preds_binary, y):
-        """Compute accuracy, precision, recall, and F1 from a batch."""
+    def _batch_metrics(self, preds_binary, preds_prob, y):
+        """Compute accuracy, precision, recall, f1, roc_auc, pr_auc, and kappa."""
         acc = float(np.mean(preds_binary == y))
 
         tp = int(np.sum((preds_binary == 1) & (y == 1)))
@@ -70,14 +71,29 @@ class ContinualLearner:
         f1 = (2 * precision * recall / (precision + recall)
               if (precision + recall) > 0 else 0.0)
 
-        return acc, precision, recall, f1
+        try:
+            roc_auc = float(roc_auc_score(y, preds_prob))
+        except ValueError:
+            roc_auc = 0.5  # Neutral score if only one class is present
+
+        try:
+            pr_auc = float(average_precision_score(y, preds_prob))
+        except ValueError:
+            pr_auc = 0.0  # Undefined if only one class present
+
+        try:
+            kappa = float(cohen_kappa_score(y, preds_binary))
+        except Exception:
+            kappa = 0.0
+
+        return acc, precision, recall, f1, roc_auc, pr_auc, kappa
 
     # ------------------------------------------------------------------
     # Main streaming loop
     # ------------------------------------------------------------------
 
     def process_stream(self, generator, num_batches, batch_size=64,
-                       drift_prob=0.002):
+                       drift_prob=0.002, decision_thresh=0.25):
         """Processes a data stream, simulating continual learning."""
 
         print(f"\nStarting simulation for configuration: {self.config_name}")
@@ -87,7 +103,7 @@ class ContinualLearner:
         # model a decent starting point (with class weights from the start).
         # ---------------------------------------------------------------
         print("Bootstrapping model...")
-        for _ in range(100):
+        for _ in range(250):  # Extended: 250 batches = 16,000 transactions
             X, y = generator.generate_batch(batch_size)
             self._train(X, y)
             if self.memory:
@@ -99,17 +115,15 @@ class ContinualLearner:
         # ---------------------------------------------------------------
         for batch_idx in tqdm(range(num_batches), desc=self.config_name):
 
-            # Randomly inject a concept drift based on probability
-            if random.random() < drift_prob and batch_idx > 100:
-                generator.trigger_drift()
+            # Concept drift is naturally occurring in real-time data
 
             X, y = generator.generate_batch(batch_size)
 
             # --- Predict ---
             preds = self.model.predict(X, verbose=0)
-            preds_binary = (preds > 0.5).astype(int)
+            preds_binary = (preds > decision_thresh).astype(int)
 
-            acc, precision, recall, f1 = self._batch_metrics(preds_binary, y)
+            acc, precision, recall, f1, roc_auc, pr_auc, kappa = self._batch_metrics(preds_binary, preds, y)
 
             self.metrics_log.append({
                 'batch':     batch_idx,
@@ -117,6 +131,9 @@ class ContinualLearner:
                 'precision': precision,
                 'recall':    recall,
                 'f1':        f1,
+                'roc_auc':   roc_auc,
+                'pr_auc':    pr_auc,
+                'kappa':     kappa,
             })
 
             # --- Add to memory ---
@@ -144,15 +161,17 @@ class ContinualLearner:
                       f"(recall={recall:.3f}, f1={f1:.3f}) Adapting...")
                 self.drift_events.append(batch_idx)
 
-                # --- KEY FIX: wipe stale old-concept patterns from memory ---
-                # Without this, replaying old fraud examples teaches the model
-                # two contradictory fraud concepts simultaneously.
-                if self.memory:
+                # --- Soft Memory Eviction ---
+                # Instead of wiping all memory (catastrophic forgetting risk),
+                # we only evict samples IF the buffer has grown very large.
+                # This preserves some historical examples while making room
+                # for new concept data.
+                if self.memory and len(self.memory) > 500:
                     self.memory.clear()
 
-                # Fine-tune at elevated LR on ONLY the current batch
-                # (new concept data). Memory will refill over next batches.
-                for _ in range(5):
+                # Fine-tune at elevated LR on the current batch.
+                # 10 steps give the model a strong push toward the new concept.
+                for _ in range(10):
                     self._train(X, y, lr=DRIFT_LR)
 
                 # Restore base LR for stable online learning
@@ -160,7 +179,20 @@ class ContinualLearner:
 
             # --- Standard online update (every non-drift batch) ---
             else:
-                self._train(X, y, lr=BASE_LR)
+                if self.memory and len(self.memory) >= batch_size:
+                    X_mem, y_mem = self.memory.sample(batch_size)
+                    if len(X_mem) > 0:
+                        X_combined = np.concatenate((X, X_mem))
+                        y_combined = np.concatenate((y, y_mem))
+                        indices = np.arange(len(X_combined))
+                        np.random.shuffle(indices)
+                        X_combined = X_combined[indices]
+                        y_combined = y_combined[indices]
+                        self._train(X_combined, y_combined, lr=BASE_LR)
+                    else:
+                        self._train(X, y, lr=BASE_LR)
+                else:
+                    self._train(X, y, lr=BASE_LR)
 
         return pd.DataFrame(self.metrics_log), self.drift_events
 
@@ -171,7 +203,7 @@ class ContinualLearner:
 
 def run_simulation():
     # Simulation parameters
-    NUM_TRANSACTIONS = 192_000   # Reduced for faster runs (~10-15 min)
+    NUM_TRANSACTIONS = 590_000   # Full IEEE dataset size
     BATCH_SIZE       = 64
     NUM_BATCHES      = NUM_TRANSACTIONS // BATCH_SIZE   # = 3 000 batches
     DRIFT_PROB       = 0.002     # ~6 drifts expected per 3 000-batch run
@@ -185,11 +217,13 @@ def run_simulation():
     ]
 
     for conf in configs:
-        generator = StreamingDataGenerator(fraud_ratio=FRAUD_RATIO)
+        generator = RealtimeDataGenerator()
         learner   = ContinualLearner(
             config_name=conf['name'],
             detector_type=conf['detector'],
             memory_type=conf['memory'],
+            seq_len=generator.seq_len,
+            num_features=generator.num_features
         )
 
         df, drifts = learner.process_stream(
