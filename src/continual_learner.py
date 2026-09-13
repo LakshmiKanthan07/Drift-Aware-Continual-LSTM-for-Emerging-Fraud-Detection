@@ -2,12 +2,14 @@ import os
 import random
 import pandas as pd
 import numpy as np
+import collections
 from tqdm import tqdm
-from sklearn.metrics import roc_auc_score, cohen_kappa_score, average_precision_score
+from sklearn.metrics import roc_auc_score, cohen_kappa_score, average_precision_score, f1_score
 from realtime_generator import RealtimeDataGenerator
 from models.lstm_model import build_lstm_model
 from drift_detection.adwin import ADWINDriftDetector
 from drift_detection.window import WindowDriftDetector
+from drift_detection.dual import DualDriftDetector
 from memory.random import RandomReplayBuffer
 from memory.balanced import BalancedReplayBuffer
 
@@ -21,6 +23,43 @@ BASE_LR       = 0.001
 DRIFT_LR      = 0.005   # 5× base – fast adaptation immediately after drift
 
 
+class AdaptiveThreshold:
+    def __init__(self, window_size=1000):
+        self.window_size = window_size
+        self.y_true_cache = collections.deque(maxlen=window_size)
+        self.y_prob_cache = collections.deque(maxlen=window_size)
+        self.current_threshold = 0.25  # default starting point
+
+    def add(self, y_true_batch, y_prob_batch):
+        self.y_true_cache.extend(y_true_batch.flatten())
+        self.y_prob_cache.extend(y_prob_batch.flatten())
+
+    def update_threshold(self):
+        """Finds the optimal threshold to maximize F1-score over recent history."""
+        if len(self.y_true_cache) < 200:
+            return self.current_threshold  # Not enough data yet
+
+        y_true = np.array(self.y_true_cache)
+        y_prob = np.array(self.y_prob_cache)
+        
+        # If no fraud in history, keep current threshold
+        if np.sum(y_true) == 0:
+            return self.current_threshold
+
+        best_thresh = self.current_threshold
+        best_f1 = 0.0
+
+        for thresh in np.arange(0.10, 0.60, 0.05):
+            preds = (y_prob > thresh).astype(int)
+            f1 = f1_score(y_true, preds, zero_division=0)
+            if f1 > best_f1:
+                best_f1 = f1
+                best_thresh = thresh
+                
+        self.current_threshold = best_thresh
+        return self.current_threshold
+
+
 class ContinualLearner:
     def __init__(self, config_name, detector_type, memory_type,
                  seq_len=1, num_features=431):
@@ -31,6 +70,8 @@ class ContinualLearner:
             self.detector = ADWINDriftDetector()
         elif detector_type == 'window':
             self.detector = WindowDriftDetector()
+        elif detector_type == 'dual':
+            self.detector = DualDriftDetector()
         else:
             self.detector = None  # Static baseline – no detection
 
@@ -40,7 +81,8 @@ class ContinualLearner:
             self.memory = BalancedReplayBuffer()
         else:
             self.memory = None  # No memory replay
-
+            
+        self.adaptive_threshold = AdaptiveThreshold(window_size=1000)
         self.metrics_log = []
         self.drift_events = []
 
@@ -93,7 +135,7 @@ class ContinualLearner:
     # ------------------------------------------------------------------
 
     def process_stream(self, generator, num_batches, batch_size=64,
-                       drift_prob=0.002, decision_thresh=0.25):
+                       drift_prob=0.002, use_adaptive_thresh=True):
         """Processes a data stream, simulating continual learning."""
 
         print(f"\nStarting simulation for configuration: {self.config_name}")
@@ -115,12 +157,21 @@ class ContinualLearner:
         # ---------------------------------------------------------------
         for batch_idx in tqdm(range(num_batches), desc=self.config_name):
 
-            # Concept drift is naturally occurring in real-time data
-
             X, y = generator.generate_batch(batch_size)
 
             # --- Predict ---
             preds = self.model.predict(X, verbose=0)
+            
+            # --- Dynamic Threshold Optimization ---
+            if use_adaptive_thresh:
+                self.adaptive_threshold.add(y, preds)
+                # Re-tune threshold every 100 batches
+                if batch_idx > 0 and batch_idx % 100 == 0:
+                    self.adaptive_threshold.update_threshold()
+                decision_thresh = self.adaptive_threshold.current_threshold
+            else:
+                decision_thresh = 0.25
+                
             preds_binary = (preds > decision_thresh).astype(int)
 
             acc, precision, recall, f1, roc_auc, pr_auc, kappa = self._batch_metrics(preds_binary, preds, y)
@@ -134,6 +185,7 @@ class ContinualLearner:
                 'roc_auc':   roc_auc,
                 'pr_auc':    pr_auc,
                 'kappa':     kappa,
+                'threshold': decision_thresh
             })
 
             # --- Add to memory ---
@@ -141,17 +193,19 @@ class ContinualLearner:
                 for i in range(batch_size):
                     self.memory.add(X[i], y[i])
 
-            # --- Drift detection (fed per-batch recall / F1) ---
+            # --- Drift detection ---
             drift_detected = False
             if self.detector:
                 if isinstance(self.detector, ADWINDriftDetector):
-                    # ADWIN tracks the per-batch F1 stream
                     if self.detector.update(f1):
                         drift_detected = True
                         self.detector.reset()
                 elif isinstance(self.detector, WindowDriftDetector):
-                    # Window detector tracks per-batch recall stream
                     if self.detector.update(recall):
+                        drift_detected = True
+                        self.detector.reset()
+                elif isinstance(self.detector, DualDriftDetector):
+                    if self.detector.update(recall, f1):
                         drift_detected = True
                         self.detector.reset()
 
@@ -161,16 +215,10 @@ class ContinualLearner:
                       f"(recall={recall:.3f}, f1={f1:.3f}) Adapting...")
                 self.drift_events.append(batch_idx)
 
-                # --- Soft Memory Eviction ---
-                # Instead of wiping all memory (catastrophic forgetting risk),
-                # we only evict samples IF the buffer has grown very large.
-                # This preserves some historical examples while making room
-                # for new concept data.
                 if self.memory and len(self.memory) > 500:
                     self.memory.clear()
 
                 # Fine-tune at elevated LR on the current batch.
-                # 10 steps give the model a strong push toward the new concept.
                 for _ in range(10):
                     self._train(X, y, lr=DRIFT_LR)
 
@@ -203,17 +251,16 @@ class ContinualLearner:
 
 def run_simulation():
     # Simulation parameters
-    NUM_TRANSACTIONS = 590_000   # Full IEEE dataset size
+    NUM_TRANSACTIONS = 590_000
     BATCH_SIZE       = 64
-    NUM_BATCHES      = NUM_TRANSACTIONS // BATCH_SIZE   # = 3 000 batches
-    DRIFT_PROB       = 0.002     # ~6 drifts expected per 3 000-batch run
+    NUM_BATCHES      = NUM_TRANSACTIONS // BATCH_SIZE
+    DRIFT_PROB       = 0.002
 
     os.makedirs('data', exist_ok=True)
 
     configs = [
         {'name': 'Static Baseline',          'detector': None,     'memory': None},
-        {'name': 'Config A (ADWIN + Random)', 'detector': 'adwin',  'memory': 'random'},
-        {'name': 'Config B (Window + Balanced)', 'detector': 'window', 'memory': 'balanced'},
+        {'name': 'Config C (Dual + Dynamic + Residual)', 'detector': 'dual', 'memory': 'balanced'},
     ]
 
     for conf in configs:
@@ -231,6 +278,7 @@ def run_simulation():
             num_batches=NUM_BATCHES,
             batch_size=BATCH_SIZE,
             drift_prob=DRIFT_PROB,
+            use_adaptive_thresh=True if conf['detector'] is not None else False
         )
 
         safe_name = (conf['name']

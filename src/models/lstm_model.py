@@ -3,7 +3,7 @@ from tensorflow.keras.models import Model
 from tensorflow.keras.layers import (
     LSTM, Dense, Dropout, Input, Bidirectional,
     BatchNormalization, LeakyReLU, LayerNormalization,
-    Reshape, Permute, Activation, Multiply, GlobalAveragePooling1D
+    Reshape, Multiply, GlobalAveragePooling1D, Concatenate, Flatten
 )
 from tensorflow.keras.regularizers import l2
 from tensorflow.keras.optimizers import Adam
@@ -28,80 +28,68 @@ def focal_loss(gamma=2.0, alpha=0.50):
 def channel_attention(x, num_features, reduction_ratio=16):
     """
     Squeeze-and-Excitation style channel attention over the feature dimension.
-    Since seq_len=1 in this tabular streaming setup, we treat each of the
-    431 features as a 'channel' and learn which features matter most for fraud.
-    
-    This is the correct attention mechanism for (batch, 1, features) input shapes.
     """
-    # Squeeze: average over the time dimension → (batch, features)
     squeezed = GlobalAveragePooling1D()(x)   # (batch, num_features)
-
-    # Excitation: two-layer MLP to learn feature importance weights
     r = max(1, num_features // reduction_ratio)
     excited = Dense(r, activation='relu', use_bias=False,
                     kernel_regularizer=l2(1e-4), name='se_fc1')(squeezed)
     excited = Dense(num_features, activation='sigmoid', use_bias=False,
-                    kernel_regularizer=l2(1e-4), name='se_fc2')(excited)   # (batch, num_features)
-
-    # Reshape for broadcasting: (batch, 1, num_features)
+                    kernel_regularizer=l2(1e-4), name='se_fc2')(excited)
     excited = Reshape((1, num_features), name='se_reshape')(excited)
-
-    # Scale: element-wise multiply original input by importance weights
     return Multiply(name='se_scale')([x, excited])
 
 
 def build_lstm_model(seq_len, num_features, learning_rate=0.001):
     """
     Drift-Aware Continual BiLSTM model with:
-    - Squeeze-and-Excitation feature attention (works correctly for seq_len=1)
+    - Squeeze-and-Excitation feature attention
+    - Residual Skip Connection bypassing BiLSTMs to improve gradient flow during adaptation
     - Two Bidirectional LSTM layers (128, 64) with L2 regularization
     - Focal Loss (gamma=2.0, alpha=0.50) for extreme class imbalance
     """
     inputs = Input(shape=(seq_len, num_features), name='transaction_input')
 
-    # -----------------------------------------------------------------------
-    # Input normalization
-    # -----------------------------------------------------------------------
     x = BatchNormalization(name='input_bn')(inputs)
 
-    # -----------------------------------------------------------------------
-    # Squeeze-and-Excitation Feature Attention Block
-    # Learns which of the 431 features are most predictive of fraud.
-    # Works correctly even when seq_len=1 (tabular streaming data).
-    # -----------------------------------------------------------------------
-    x = channel_attention(x, num_features, reduction_ratio=16)
-    x = LayerNormalization(name='attn_ln')(x)
+    # Attention Block
+    x_attn = channel_attention(x, num_features, reduction_ratio=16)
+    x_attn = LayerNormalization(name='attn_ln')(x_attn)
+    
+    # Save the attended features for the residual skip connection
+    shortcut = Flatten(name='shortcut_flatten')(x_attn)
 
-    # -----------------------------------------------------------------------
     # First BiLSTM Layer
-    # -----------------------------------------------------------------------
     x = Bidirectional(
         LSTM(128, return_sequences=True, kernel_regularizer=l2(1e-4)),
         name='bilstm_1'
-    )(x)
+    )(x_attn)
     x = BatchNormalization(name='bn_1')(x)
     x = Dropout(0.4, name='drop_1')(x)
 
-    # -----------------------------------------------------------------------
-    # Second BiLSTM Layer – condenses to a single context vector
-    # -----------------------------------------------------------------------
+    # Second BiLSTM Layer
     x = Bidirectional(
         LSTM(64, return_sequences=False, kernel_regularizer=l2(1e-4)),
         name='bilstm_2'
     )(x)
     x = BatchNormalization(name='bn_2')(x)
     x = Dropout(0.4, name='drop_2')(x)
+    
+    # -----------------------------------------------------------------------
+    # RESIDUAL SKIP CONNECTION
+    # Concatenate the original attended features directly with the BiLSTM output.
+    # This acts like a ResNet shortcut, dramatically improving gradient flow
+    # to the attention weights and feature layers during rapid 10-epoch drift tuning.
+    # -----------------------------------------------------------------------
+    x = Concatenate(name='residual_concat')([x, shortcut])
 
-    # -----------------------------------------------------------------------
     # Classification Head
-    # -----------------------------------------------------------------------
     x = Dense(64, kernel_regularizer=l2(1e-4), name='dense_1')(x)
     x = LeakyReLU(negative_slope=0.1, name='leaky_relu')(x)
     x = Dropout(0.3, name='drop_3')(x)
 
     outputs = Dense(1, activation='sigmoid', name='fraud_output')(x)
 
-    model = Model(inputs=inputs, outputs=outputs, name='DriftAware_SE_BiLSTM')
+    model = Model(inputs=inputs, outputs=outputs, name='DriftAware_SE_BiLSTM_Residual')
 
     optimizer = Adam(learning_rate=learning_rate)
     model.compile(
