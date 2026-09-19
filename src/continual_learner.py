@@ -259,27 +259,39 @@ def run_simulation():
     os.makedirs('data', exist_ok=True)
 
     configs = [
-        {'name': 'Static Baseline',          'detector': None,     'memory': None},
-        {'name': 'Config C (Dual + Dynamic + Residual)', 'detector': 'dual', 'memory': 'balanced'},
+        {'name': 'Classical XGBoost', 'is_classical': True, 'model_type': 'xgboost'},
+        {'name': 'Classical Random Forest', 'is_classical': True, 'model_type': 'random_forest'},
+        {'name': 'Classical Logistic Regression', 'is_classical': True, 'model_type': 'logistic_regression'},
+        {'name': 'Static Baseline', 'detector': None, 'memory': None, 'is_classical': False},
+        {'name': 'Config C (Dual + Dynamic + Residual)', 'detector': 'dual', 'memory': 'balanced', 'is_classical': False},
     ]
 
     for conf in configs:
         generator = RealtimeDataGenerator()
-        learner   = ContinualLearner(
-            config_name=conf['name'],
-            detector_type=conf['detector'],
-            memory_type=conf['memory'],
-            seq_len=generator.seq_len,
-            num_features=generator.num_features
-        )
+        if conf.get('is_classical'):
+            from baselines import ClassicalBaselineLearner
+            learner = ClassicalBaselineLearner(model_type=conf['model_type'])
+            df, drifts = learner.process_stream(
+                generator,
+                num_batches=NUM_BATCHES,
+                batch_size=BATCH_SIZE
+            )
+        else:
+            learner   = ContinualLearner(
+                config_name=conf['name'],
+                detector_type=conf['detector'],
+                memory_type=conf['memory'],
+                seq_len=generator.seq_len,
+                num_features=generator.num_features
+            )
 
-        df, drifts = learner.process_stream(
-            generator,
-            num_batches=NUM_BATCHES,
-            batch_size=BATCH_SIZE,
-            drift_prob=DRIFT_PROB,
-            use_adaptive_thresh=True if conf['detector'] is not None else False
-        )
+            df, drifts = learner.process_stream(
+                generator,
+                num_batches=NUM_BATCHES,
+                batch_size=BATCH_SIZE,
+                drift_prob=DRIFT_PROB,
+                use_adaptive_thresh=True if conf['detector'] is not None else False
+            )
 
         safe_name = (conf['name']
                      .replace(' ', '_')

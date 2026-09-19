@@ -31,11 +31,17 @@ PALETTE = {
     'Static_Baseline':             '#e74c3c',
     'Config_A_ADWIN_and_Random':   '#3498db',
     'Config_B_Window_and_Balanced':'#2ecc71',
+    'Classical_XGBoost':           '#f39c12',
+    'Classical_Random_Forest':     '#8e44ad',
+    'Classical_Logistic_Regression':'#1abc9c',
 }
 LABELS = {
-    'Static_Baseline':             'Static Baseline',
+    'Static_Baseline':             'Static Baseline LSTM',
     'Config_A_ADWIN_and_Random':   'Config A  (ADWIN + Random)',
     'Config_B_Window_and_Balanced':'Config B  (Window + Balanced)',
+    'Classical_XGBoost':           'XGBoost (Static)',
+    'Classical_Random_Forest':     'Random Forest (Static)',
+    'Classical_Logistic_Regression':'Logistic Reg. (Online)',
 }
 
 
@@ -80,7 +86,7 @@ st.sidebar.header("⚙️ Controls")
 window_size     = st.sidebar.slider("Smoothing window (batches)", 5, 200, 50)
 selected_metric = st.sidebar.selectbox(
     "Primary metric to plot",
-    ['recall', 'f1', 'precision', 'accuracy'],
+    ['pr_auc', 'roc_auc', 'f1', 'recall', 'precision', 'accuracy', 'kappa'],
 )
 show_drift_lines = st.sidebar.checkbox("Show drift event markers", value=True)
 
@@ -97,6 +103,8 @@ for col, name in zip(kpi_cols, names):
     label = LABELS.get(name, name)
     color = PALETTE.get(name, '#999999')
 
+    avg_pr_auc = tail['pr_auc'].mean() if 'pr_auc' in tail else 0.0
+    avg_roc_auc = tail['roc_auc'].mean() if 'roc_auc' in tail else 0.5
     avg_recall = tail['recall'].mean()
     avg_f1     = tail['f1'].mean()
     n_drifts   = len(drifts.get(name, []))
@@ -106,9 +114,10 @@ for col, name in zip(kpi_cols, names):
             f"<h4 style='color:{color}'>{label}</h4>",
             unsafe_allow_html=True,
         )
-        st.metric("Avg Recall (last 100 batches)", f"{avg_recall:.3f}")
-        st.metric("Avg F1 (last 100 batches)",     f"{avg_f1:.3f}")
-        st.metric("Drift events detected",          n_drifts)
+        st.metric("Avg PR-AUC (last 100 batches)", f"{avg_pr_auc:.3f}")
+        st.metric("Avg ROC-AUC (last 100)", f"{avg_roc_auc:.3f}")
+        st.metric("Avg Recall (last 100)", f"{avg_recall:.3f}")
+        st.metric("Drift events detected", n_drifts)
 
 # --------------------------------------------------------------------------- #
 #  Time-series plot                                                             #
