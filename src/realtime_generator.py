@@ -44,6 +44,11 @@ class RealtimeDataGenerator:
         self.pad_idx = self.total_samples
         self.card_hist_idx = defaultdict(lambda: deque(maxlen=self.seq_len))
         
+        print("Freeing memory from pandas DataFrame...")
+        del self.df
+        import gc
+        gc.collect()
+        
         print(f"Ready to stream {self.total_samples} samples grouped by card1 (seq_len={self.seq_len}).")
 
     def generate_batch(self, batch_size):
@@ -78,6 +83,11 @@ class RealtimeDataGenerator:
         self.current_index = end_idx
         
         return batch_dict, y_batch
+        
+    def reset(self):
+        """Resets the generator state to begin streaming from the start."""
+        self.current_index = 0
+        self.card_hist_idx.clear()
 
 if __name__ == "__main__":
     generator = RealtimeDataGenerator()

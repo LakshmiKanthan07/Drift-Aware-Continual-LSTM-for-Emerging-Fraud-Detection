@@ -113,6 +113,14 @@ class StaticMLPBaseline:
 
         print(f"Training Static MLP on {len(y_train)} samples for 5 epochs...")
         self.model.fit(X_train, y_train, epochs=5, batch_size=64, verbose=1)
+        
+        # Free memory from bootstrap phase
+        del X_bootstrap_dict
+        del y_bootstrap
+        del X_train
+        del y_train
+        import gc
+        gc.collect()
 
         # Streaming Phase
         drifts_detected = []
@@ -120,7 +128,7 @@ class StaticMLPBaseline:
         for batch_idx in tqdm(range(num_batches), desc=self.model_type):
             X_dict, y = generator.generate_batch(batch_size)
             
-            preds_prob = self.model.predict(X_dict, verbose=0).ravel()
+            preds_prob = self.model(X_dict, training=False).numpy().ravel()
             y = y.ravel()
 
             self.adaptive_threshold.add(y, preds_prob)

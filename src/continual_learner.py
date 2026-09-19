@@ -160,8 +160,8 @@ class ContinualLearner:
 
             X, y = generator.generate_batch(batch_size)
 
-            # --- Predict ---
-            preds = self.model.predict(X, verbose=0).ravel()
+            # --- Predict (using direct model call to avoid TensorFlow predict() memory leak) ---
+            preds = self.model(X, training=False).numpy().ravel()
             y_flat = y.ravel()
             
             # --- Dynamic Threshold Optimization ---
@@ -253,23 +253,26 @@ class ContinualLearner:
 # ---------------------------------------------------------------------------
 
 def run_simulation():
-    # Simulation parameters
-    NUM_TRANSACTIONS = 590_000
+    # Simulation parameters (Reduced to 200,000 transactions for optimal laptop stability & performance)
+    NUM_TRANSACTIONS = 200_000
     BATCH_SIZE       = 64
     NUM_BATCHES      = NUM_TRANSACTIONS // BATCH_SIZE
     DRIFT_PROB       = 0.002
 
     os.makedirs('data', exist_ok=True)
 
-    # Replaced trees with Static MLP Baseline
     configs = [
         {'name': 'Static MLP Baseline', 'is_classical': True},
         {'name': 'Static Baseline', 'detector': None, 'memory': None, 'is_classical': False},
+        {'name': 'Config A (ADWIN + Random)', 'detector': 'adwin', 'memory': 'random', 'is_classical': False},
+        {'name': 'Config B (Window + Balanced)', 'detector': 'window', 'memory': 'balanced', 'is_classical': False},
         {'name': 'Config C (Dual + Dynamic + Residual)', 'detector': 'dual', 'memory': 'balanced', 'is_classical': False},
     ]
 
+    generator = RealtimeDataGenerator(seq_len=5) # Initialize once
+
     for conf in configs:
-        generator = RealtimeDataGenerator(seq_len=5) # Now using sequence length of 5!
+        generator.reset() # Reset generator for the new config
         
         if conf.get('is_classical'):
             from baselines import StaticMLPBaseline
@@ -308,6 +311,13 @@ def run_simulation():
                      .replace('+', 'and'))
         df.to_csv(f'data/{safe_name}_metrics.csv', index=False)
         pd.DataFrame(drifts).to_csv(f'data/{safe_name}_drifts.csv', index=False)
+        
+        # Free memory between simulation configs to prevent OOM
+        del learner
+        import gc
+        import tensorflow as tf
+        tf.keras.backend.clear_session()
+        gc.collect()
 
 if __name__ == '__main__':
     run_simulation()

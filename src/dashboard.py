@@ -56,12 +56,27 @@ def load_data():
 
     for f in metric_files:
         key = os.path.basename(f).replace('_metrics.csv', '')
-        metrics[key] = pd.read_csv(f)
+        # Only load Neural Network models defined in LABELS
+        if key in LABELS:
+            try:
+                df = pd.read_csv(f)
+                if not df.empty:
+                    metrics[key] = df
+            except Exception:
+                pass
 
     for f in drift_files:
         key = os.path.basename(f).replace('_drifts.csv', '')
-        raw = pd.read_csv(f)['drift_batch'].dropna().tolist()
-        drifts[key] = [int(d) for d in raw]
+        if key in LABELS:
+            try:
+                df = pd.read_csv(f)
+                if 'drift_batch' in df.columns and not df['drift_batch'].empty:
+                    raw = df['drift_batch'].dropna().tolist()
+                    drifts[key] = [int(d) for d in raw]
+                else:
+                    drifts[key] = []
+            except Exception:
+                drifts[key] = []
 
     return metrics, drifts
 
