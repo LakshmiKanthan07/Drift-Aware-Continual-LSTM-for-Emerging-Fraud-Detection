@@ -6,37 +6,35 @@ class RandomReplayBuffer:
         self.capacity = capacity
         self.buffer = []
         
-    def add(self, x, y):
+    def add(self, x_dict, y):
         """
         Adds a single sample to the buffer.
-        If buffer is full, replaces a random existing sample (Reservoir sampling idea).
-        x shape: (seq_len, num_features)
-        y shape: (1,)
+        x_dict: dictionary of arrays for a single sample
+        y: label array for a single sample
         """
         if len(self.buffer) < self.capacity:
-            self.buffer.append((x, y))
+            self.buffer.append((x_dict, y))
         else:
-            # Randomly replace an old sample
             idx = random.randint(0, self.capacity - 1)
-            self.buffer[idx] = (x, y)
+            self.buffer[idx] = (x_dict, y)
 
     def sample(self, batch_size):
-        """Samples a mini-batch from the buffer."""
+        """Samples a mini-batch from the buffer. Output X is a dict of arrays."""
         if len(self.buffer) < batch_size:
             batch = self.buffer
         else:
             batch = random.sample(self.buffer, batch_size)
             
-        X_batch = np.array([item[0] for item in batch])
         y_batch = np.array([item[1] for item in batch])
+        
+        # Build dict of arrays
+        X_batch = {}
+        if batch:
+            keys = batch[0][0].keys()
+            for k in keys:
+                X_batch[k] = np.array([item[0][k] for item in batch])
+                
         return X_batch, y_batch
 
     def clear(self):
-        """Clears all samples from the buffer.
-        Call this on drift detection to wipe stale fraud patterns so the
-        buffer refills with data from the new fraud concept.
-        """
         self.buffer = []
-
-    def __len__(self):
-        return len(self.buffer)

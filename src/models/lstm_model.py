@@ -3,7 +3,7 @@ from tensorflow.keras.models import Model
 from tensorflow.keras.layers import (
     LSTM, Dense, Dropout, Input, Bidirectional,
     BatchNormalization, LeakyReLU, LayerNormalization,
-    Reshape, Multiply, GlobalAveragePooling1D, Concatenate, Flatten
+    Reshape, Multiply, GlobalAveragePooling1D, Concatenate, Flatten, Embedding
 )
 from tensorflow.keras.regularizers import l2
 from tensorflow.keras.optimizers import Adam
@@ -39,20 +39,40 @@ def channel_attention(x, num_features, reduction_ratio=16):
     return Multiply(name='se_scale')([x, excited])
 
 
-def build_lstm_model(seq_len, num_features, learning_rate=0.001):
+def build_lstm_model(seq_len, num_cont_features, cat_vocab_dict, learning_rate=0.001):
     """
-    Drift-Aware Continual BiLSTM model with:
-    - Squeeze-and-Excitation feature attention
-    - Residual Skip Connection bypassing BiLSTMs to improve gradient flow during adaptation
-    - Two Bidirectional LSTM layers (128, 64) with L2 regularization
-    - Focal Loss (gamma=2.0, alpha=0.50) for extreme class imbalance
+    Drift-Aware Continual BiLSTM model with Categorical Embeddings.
+    Takes a dictionary of inputs (continuous + one for each categorical).
     """
-    inputs = Input(shape=(seq_len, num_features), name='transaction_input')
+    inputs_dict = {}
+    
+    # Continuous Input
+    cont_input = Input(shape=(seq_len, num_cont_features), name='continuous')
+    inputs_dict['continuous'] = cont_input
+    
+    # Categorical Inputs & Embeddings
+    embedded_features = []
+    for cat_name, vocab_size in cat_vocab_dict.items():
+        inp = Input(shape=(seq_len,), name=cat_name)
+        inputs_dict[cat_name] = inp
+        
+        # Rule of thumb for embedding dimension
+        embed_dim = min(50, (vocab_size + 1) // 2)
+        emb = Embedding(input_dim=vocab_size, output_dim=embed_dim, name=f'emb_{cat_name}')(inp)
+        embedded_features.append(emb)
+    
+    if embedded_features:
+        x = Concatenate(name='concat_inputs')([cont_input] + embedded_features)
+    else:
+        x = cont_input
 
-    x = BatchNormalization(name='input_bn')(inputs)
+    # Dynamic feature size after concatenation
+    total_features = num_cont_features + sum([min(50, (v + 1) // 2) for v in cat_vocab_dict.values()])
+
+    x = BatchNormalization(name='input_bn')(x)
 
     # Attention Block
-    x_attn = channel_attention(x, num_features, reduction_ratio=16)
+    x_attn = channel_attention(x, total_features, reduction_ratio=16)
     x_attn = LayerNormalization(name='attn_ln')(x_attn)
     
     # Save the attended features for the residual skip connection
@@ -74,12 +94,6 @@ def build_lstm_model(seq_len, num_features, learning_rate=0.001):
     x = BatchNormalization(name='bn_2')(x)
     x = Dropout(0.4, name='drop_2')(x)
     
-    # -----------------------------------------------------------------------
-    # RESIDUAL SKIP CONNECTION
-    # Concatenate the original attended features directly with the BiLSTM output.
-    # This acts like a ResNet shortcut, dramatically improving gradient flow
-    # to the attention weights and feature layers during rapid 10-epoch drift tuning.
-    # -----------------------------------------------------------------------
     x = Concatenate(name='residual_concat')([x, shortcut])
 
     # Classification Head
@@ -89,7 +103,8 @@ def build_lstm_model(seq_len, num_features, learning_rate=0.001):
 
     outputs = Dense(1, activation='sigmoid', name='fraud_output')(x)
 
-    model = Model(inputs=inputs, outputs=outputs, name='DriftAware_SE_BiLSTM_Residual')
+    # Create model mapping dictionary inputs to single output
+    model = Model(inputs=inputs_dict, outputs=outputs, name='DriftAware_SE_BiLSTM_Residual')
 
     optimizer = Adam(learning_rate=learning_rate)
     model.compile(
@@ -102,8 +117,3 @@ def build_lstm_model(seq_len, num_features, learning_rate=0.001):
         ]
     )
     return model
-
-
-if __name__ == "__main__":
-    model = build_lstm_model(seq_len=1, num_features=431)
-    model.summary()

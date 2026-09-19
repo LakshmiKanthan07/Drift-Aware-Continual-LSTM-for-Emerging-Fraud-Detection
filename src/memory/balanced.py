@@ -13,7 +13,7 @@ class BalancedReplayBuffer:
         self.normal_buffer = []
         self.fraud_buffer = []
         
-    def add(self, x, y):
+    def add(self, x_dict, y):
         """
         Adds a single sample to the appropriate buffer.
         """
@@ -21,16 +21,15 @@ class BalancedReplayBuffer:
         buffer = self.fraud_buffer if is_fraud else self.normal_buffer
         
         if len(buffer) < self.half_capacity:
-            buffer.append((x, y))
+            buffer.append((x_dict, y))
         else:
             # Randomly replace an old sample
             idx = random.randint(0, self.half_capacity - 1)
-            buffer[idx] = (x, y)
+            buffer[idx] = (x_dict, y)
 
     def sample(self, batch_size):
         """
-        Samples a balanced mini-batch.
-        Half from normal_buffer, half from fraud_buffer (if available).
+        Samples a balanced mini-batch. Output X is a dict of arrays.
         """
         half_batch = batch_size // 2
         
@@ -53,19 +52,19 @@ class BalancedReplayBuffer:
         random.shuffle(batch)
         
         if not batch:
-            return np.array([]), np.array([])
+            return {}, np.array([])
             
-        X_batch = np.array([item[0] for item in batch])
         y_batch = np.array([item[1] for item in batch])
+        
+        # Build dict of arrays
+        X_batch = {}
+        keys = batch[0][0].keys()
+        for k in keys:
+            X_batch[k] = np.array([item[0][k] for item in batch])
+            
         return X_batch, y_batch
 
     def clear(self):
-        """Clears all samples from both sub-buffers.
-        Call this on drift detection to wipe stale fraud patterns so the
-        buffer refills with data from the new fraud concept.
-        """
+        """Clears all samples from the buffer."""
         self.normal_buffer = []
-        self.fraud_buffer  = []
-
-    def __len__(self):
-        return len(self.normal_buffer) + len(self.fraud_buffer)
+        self.fraud_buffer = []

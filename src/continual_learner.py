@@ -62,9 +62,9 @@ class AdaptiveThreshold:
 
 class ContinualLearner:
     def __init__(self, config_name, detector_type, memory_type,
-                 seq_len=1, num_features=431):
+                 seq_len, num_cont_features, cat_vocab_dict):
         self.config_name = config_name
-        self.model = build_lstm_model(seq_len, num_features)
+        self.model = build_lstm_model(seq_len, num_cont_features, cat_vocab_dict)
 
         if detector_type == 'adwin':
             self.detector = ADWINDriftDetector()
@@ -94,11 +94,11 @@ class ContinualLearner:
         """Dynamically change the optimizer's learning rate."""
         self.model.optimizer.learning_rate = lr
 
-    def _train(self, X, y, lr=None):
+    def _train(self, X_dict, y, lr=None):
         """Train one step. Optionally set a custom LR."""
         if lr is not None:
             self._set_lr(lr)
-        self.model.train_on_batch(X, y)
+        self.model.train_on_batch(X_dict, y)
 
     def _batch_metrics(self, preds_binary, preds_prob, y):
         """Compute accuracy, precision, recall, f1, roc_auc, pr_auc, and kappa."""
@@ -150,7 +150,8 @@ class ContinualLearner:
             self._train(X, y)
             if self.memory:
                 for i in range(batch_size):
-                    self.memory.add(X[i], y[i])
+                    x_i = {k: v[i] for k, v in X.items()}
+                    self.memory.add(x_i, y[i])
 
         # ---------------------------------------------------------------
         # Streaming phase
@@ -160,11 +161,12 @@ class ContinualLearner:
             X, y = generator.generate_batch(batch_size)
 
             # --- Predict ---
-            preds = self.model.predict(X, verbose=0)
+            preds = self.model.predict(X, verbose=0).ravel()
+            y_flat = y.ravel()
             
             # --- Dynamic Threshold Optimization ---
             if use_adaptive_thresh:
-                self.adaptive_threshold.add(y, preds)
+                self.adaptive_threshold.add(y_flat, preds)
                 # Re-tune threshold every 100 batches
                 if batch_idx > 0 and batch_idx % 100 == 0:
                     self.adaptive_threshold.update_threshold()
@@ -174,7 +176,7 @@ class ContinualLearner:
                 
             preds_binary = (preds > decision_thresh).astype(int)
 
-            acc, precision, recall, f1, roc_auc, pr_auc, kappa = self._batch_metrics(preds_binary, preds, y)
+            acc, precision, recall, f1, roc_auc, pr_auc, kappa = self._batch_metrics(preds_binary, preds, y_flat)
 
             self.metrics_log.append({
                 'batch':     batch_idx,
@@ -191,7 +193,8 @@ class ContinualLearner:
             # --- Add to memory ---
             if self.memory:
                 for i in range(batch_size):
-                    self.memory.add(X[i], y[i])
+                    x_i = {k: v[i] for k, v in X.items()}
+                    self.memory.add(x_i, y[i])
 
             # --- Drift detection ---
             drift_detected = False
@@ -215,7 +218,7 @@ class ContinualLearner:
                       f"(recall={recall:.3f}, f1={f1:.3f}) Adapting...")
                 self.drift_events.append(batch_idx)
 
-                if self.memory and len(self.memory) > 500:
+                if self.memory and len(self.memory.normal_buffer if isinstance(self.memory, BalancedReplayBuffer) else self.memory.buffer) > 500:
                     self.memory.clear()
 
                 # Fine-tune at elevated LR on the current batch.
@@ -227,14 +230,14 @@ class ContinualLearner:
 
             # --- Standard online update (every non-drift batch) ---
             else:
-                if self.memory and len(self.memory) >= batch_size:
+                if self.memory and len(self.memory.normal_buffer if isinstance(self.memory, BalancedReplayBuffer) else self.memory.buffer) >= batch_size:
                     X_mem, y_mem = self.memory.sample(batch_size)
-                    if len(X_mem) > 0:
-                        X_combined = np.concatenate((X, X_mem))
+                    if len(y_mem) > 0:
+                        X_combined = {k: np.concatenate((X[k], X_mem[k])) for k in X.keys()}
                         y_combined = np.concatenate((y, y_mem))
-                        indices = np.arange(len(X_combined))
+                        indices = np.arange(len(y_combined))
                         np.random.shuffle(indices)
-                        X_combined = X_combined[indices]
+                        X_combined = {k: X_combined[k][indices] for k in X_combined.keys()}
                         y_combined = y_combined[indices]
                         self._train(X_combined, y_combined, lr=BASE_LR)
                     else:
@@ -258,31 +261,36 @@ def run_simulation():
 
     os.makedirs('data', exist_ok=True)
 
+    # Replaced trees with Static MLP Baseline
     configs = [
-        {'name': 'Classical XGBoost', 'is_classical': True, 'model_type': 'xgboost'},
-        {'name': 'Classical Random Forest', 'is_classical': True, 'model_type': 'random_forest'},
-        {'name': 'Classical Logistic Regression', 'is_classical': True, 'model_type': 'logistic_regression'},
+        {'name': 'Static MLP Baseline', 'is_classical': True},
         {'name': 'Static Baseline', 'detector': None, 'memory': None, 'is_classical': False},
         {'name': 'Config C (Dual + Dynamic + Residual)', 'detector': 'dual', 'memory': 'balanced', 'is_classical': False},
     ]
 
     for conf in configs:
-        generator = RealtimeDataGenerator()
+        generator = RealtimeDataGenerator(seq_len=5) # Now using sequence length of 5!
+        
         if conf.get('is_classical'):
-            from baselines import ClassicalBaselineLearner
-            learner = ClassicalBaselineLearner(model_type=conf['model_type'])
+            from baselines import StaticMLPBaseline
+            learner = StaticMLPBaseline(
+                seq_len=generator.seq_len,
+                cat_vocab_dict=generator.cat_vocab,
+                num_cont_features=generator.num_cont_features
+            )
             df, drifts = learner.process_stream(
                 generator,
                 num_batches=NUM_BATCHES,
                 batch_size=BATCH_SIZE
             )
         else:
-            learner   = ContinualLearner(
+            learner = ContinualLearner(
                 config_name=conf['name'],
                 detector_type=conf['detector'],
                 memory_type=conf['memory'],
                 seq_len=generator.seq_len,
-                num_features=generator.num_features
+                num_cont_features=generator.num_cont_features,
+                cat_vocab_dict=generator.cat_vocab
             )
 
             df, drifts = learner.process_stream(
@@ -298,14 +306,8 @@ def run_simulation():
                      .replace('(', '')
                      .replace(')', '')
                      .replace('+', 'and'))
-        df.to_csv(f"data/{safe_name}_metrics.csv", index=False)
-        pd.DataFrame({'drift_batch': drifts}).to_csv(
-            f"data/{safe_name}_drifts.csv", index=False)
+        df.to_csv(f'data/{safe_name}_metrics.csv', index=False)
+        pd.DataFrame(drifts).to_csv(f'data/{safe_name}_drifts.csv', index=False)
 
-        n_drifts = len(drifts)
-        print(f"\nFinished {conf['name']}. "
-              f"Drifts detected: {n_drifts}. Saved to data/\n")
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     run_simulation()

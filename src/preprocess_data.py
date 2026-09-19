@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import os
 import gc
+import json
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 
 def preprocess_ieee_data():
@@ -43,11 +44,15 @@ def preprocess_ieee_data():
             train[col] = pd.to_numeric(train[col], errors='coerce')
             train[col] = train[col].fillna(0).astype('float32')
 
-    # Encode categoricals
+    # Encode categoricals and save vocab sizes
+    cat_vocab = {}
+    actual_cat_features = []
     for col in categorical_features:
         if col in train.columns:
             le = LabelEncoder()
             train[col] = le.fit_transform(train[col]).astype('int32')
+            cat_vocab[col] = int(train[col].max() + 1)
+            actual_cat_features.append(col)
 
     # Scaling numerical features
     print("Scaling numerical features...")
@@ -57,12 +62,21 @@ def preprocess_ieee_data():
 
     train['isFraud'] = train['isFraud'].astype('int8')
 
-    print("Saving processed train data...")
+    print("Saving processed train data and metadata...")
     # Save as parquet to be much faster and memory efficient when reading
     train.to_parquet('data/processed_train.parquet')
     
+    metadata = {
+        'categorical_features': actual_cat_features,
+        'numerical_features': num_cols,
+        'cat_vocab': cat_vocab
+    }
+    with open('data/metadata.json', 'w') as f:
+        json.dump(metadata, f, indent=4)
+    
     print(f"Finished processing. Final shape: {train.shape}")
     print("Data saved to data/processed_train.parquet")
+    print("Metadata saved to data/metadata.json")
 
 if __name__ == '__main__':
     preprocess_ieee_data()

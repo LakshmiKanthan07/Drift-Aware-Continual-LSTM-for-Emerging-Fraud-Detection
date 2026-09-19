@@ -28,20 +28,18 @@ st.markdown(
 data_dir = os.path.join(os.path.dirname(__file__), '..', 'data')
 
 PALETTE = {
-    'Static_Baseline':             '#e74c3c',
-    'Config_A_ADWIN_and_Random':   '#3498db',
-    'Config_B_Window_and_Balanced':'#2ecc71',
-    'Classical_XGBoost':           '#f39c12',
-    'Classical_Random_Forest':     '#8e44ad',
-    'Classical_Logistic_Regression':'#1abc9c',
+    'Static_MLP_Baseline':                   '#f39c12',
+    'Static_Baseline':                       '#e74c3c',
+    'Config_A_ADWIN_and_Random':             '#3498db',
+    'Config_B_Window_and_Balanced':          '#2ecc71',
+    'Config_C_Dual_and_Dynamic_and_Residual':'#9b59b6',
 }
 LABELS = {
-    'Static_Baseline':             'Static Baseline LSTM',
-    'Config_A_ADWIN_and_Random':   'Config A  (ADWIN + Random)',
-    'Config_B_Window_and_Balanced':'Config B  (Window + Balanced)',
-    'Classical_XGBoost':           'XGBoost (Static)',
-    'Classical_Random_Forest':     'Random Forest (Static)',
-    'Classical_Logistic_Regression':'Logistic Reg. (Online)',
+    'Static_MLP_Baseline':                   'Static MLP Baseline',
+    'Static_Baseline':                       'Static Baseline LSTM',
+    'Config_A_ADWIN_and_Random':             'Config A  (ADWIN + Random)',
+    'Config_B_Window_and_Balanced':          'Config B  (Window + Balanced)',
+    'Config_C_Dual_and_Dynamic_and_Residual':'Config C (Continual LSTM)',
 }
 
 
