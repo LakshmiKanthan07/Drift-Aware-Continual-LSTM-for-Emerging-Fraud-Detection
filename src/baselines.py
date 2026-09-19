@@ -123,8 +123,11 @@ class StaticMLPBaseline:
             preds_prob = self.model.predict(X_dict, verbose=0).ravel()
             y = y.ravel()
 
-            self.adaptive_threshold.update(preds_prob)
-            threshold = self.adaptive_threshold.get_threshold()
+            self.adaptive_threshold.add(y, preds_prob)
+            if batch_idx > 0 and batch_idx % 100 == 0:
+                self.adaptive_threshold.update_threshold()
+            threshold = self.adaptive_threshold.current_threshold
+            
             preds_binary = (preds_prob >= threshold).astype(int)
 
             acc, prec, rec, f1, roc_auc, pr_auc, kappa = self._batch_metrics(preds_binary, preds_prob, y)
