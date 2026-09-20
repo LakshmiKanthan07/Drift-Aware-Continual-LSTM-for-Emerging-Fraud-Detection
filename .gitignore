@@ -16,8 +16,6 @@ venv.bak/
 data/*.zip
 data/*.parquet
 data/*.csv
-data/*_drifts.csv
-data/*_metrics.csv
 synthetic data/
 synthetic_data/
 ppt1.pptx
