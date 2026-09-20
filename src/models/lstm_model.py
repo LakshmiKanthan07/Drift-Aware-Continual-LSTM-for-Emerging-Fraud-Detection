@@ -67,7 +67,7 @@ def build_lstm_model(seq_len, num_cont_features, cat_vocab_dict, learning_rate=0
         LSTM(128, return_sequences=True, kernel_regularizer=l2(1e-4)),
         name='bilstm_1'
     )(x_attn)
-    x = BatchNormalization(name='bn_1')(x)
+    x = LayerNormalization(name='ln_1')(x)
     x = Dropout(0.2, name='drop_1')(x)
 
     # Second BiLSTM Layer
@@ -75,7 +75,7 @@ def build_lstm_model(seq_len, num_cont_features, cat_vocab_dict, learning_rate=0
         LSTM(64, return_sequences=False, kernel_regularizer=l2(1e-4)),
         name='bilstm_2'
     )(x)
-    x = BatchNormalization(name='bn_2')(x)
+    x = LayerNormalization(name='ln_2')(x)
     x = Dropout(0.2, name='drop_2')(x)
     
     x = Concatenate(name='residual_concat')([x, shortcut])
