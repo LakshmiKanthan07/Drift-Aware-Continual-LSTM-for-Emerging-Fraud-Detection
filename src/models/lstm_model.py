@@ -10,9 +10,9 @@ from tensorflow.keras.optimizers import Adam
 import tensorflow.keras.backend as K
 
 
-def focal_loss(gamma=2.0, alpha=0.50):
+def focal_loss(gamma=2.0, alpha=0.85):
     """
-    Focal Loss with alpha=0.50 to aggressively up-weight the rare fraud class.
+    Focal Loss with alpha=0.85 to aggressively up-weight the rare fraud class.
     gamma=2.0 focuses learning on hard, misclassified examples.
     """
     def focal_loss_fixed(y_true, y_pred):
@@ -84,7 +84,7 @@ def build_lstm_model(seq_len, num_cont_features, cat_vocab_dict, learning_rate=0
         name='bilstm_1'
     )(x_attn)
     x = BatchNormalization(name='bn_1')(x)
-    x = Dropout(0.4, name='drop_1')(x)
+    x = Dropout(0.2, name='drop_1')(x)
 
     # Second BiLSTM Layer
     x = Bidirectional(
@@ -92,24 +92,24 @@ def build_lstm_model(seq_len, num_cont_features, cat_vocab_dict, learning_rate=0
         name='bilstm_2'
     )(x)
     x = BatchNormalization(name='bn_2')(x)
-    x = Dropout(0.4, name='drop_2')(x)
+    x = Dropout(0.2, name='drop_2')(x)
     
     x = Concatenate(name='residual_concat')([x, shortcut])
 
     # Classification Head
     x = Dense(64, kernel_regularizer=l2(1e-4), name='dense_1')(x)
     x = LeakyReLU(negative_slope=0.1, name='leaky_relu')(x)
-    x = Dropout(0.3, name='drop_3')(x)
+    x = Dropout(0.15, name='drop_3')(x)
 
     outputs = Dense(1, activation='sigmoid', name='fraud_output')(x)
 
     # Create model mapping dictionary inputs to single output
     model = Model(inputs=inputs_dict, outputs=outputs, name='DriftAware_SE_BiLSTM_Residual')
 
-    optimizer = Adam(learning_rate=learning_rate)
+    optimizer = Adam(learning_rate=learning_rate, clipnorm=1.0)
     model.compile(
         optimizer=optimizer,
-        loss=focal_loss(gamma=2.0, alpha=0.50),
+        loss=focal_loss(gamma=2.0, alpha=0.85),
         metrics=[
             'accuracy',
             tf.keras.metrics.Precision(name='precision'),

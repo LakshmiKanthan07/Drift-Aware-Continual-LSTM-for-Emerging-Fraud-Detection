@@ -112,7 +112,8 @@ class StaticMLPBaseline:
         y_train = np.vstack(y_bootstrap)
 
         print(f"Training Static MLP on {len(y_train)} samples for 5 epochs...")
-        self.model.fit(X_train, y_train, epochs=5, batch_size=64, verbose=1)
+        self.model.fit(X_train, y_train, epochs=5, batch_size=64, verbose=1,
+                       class_weight={0: 1.0, 1: 29})  # ~1/0.035 fraud upweight
         
         # Free memory from bootstrap phase
         del X_bootstrap_dict

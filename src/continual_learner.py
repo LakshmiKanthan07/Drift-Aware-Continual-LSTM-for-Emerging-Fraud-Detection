@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import collections
 from tqdm import tqdm
-from sklearn.metrics import roc_auc_score, cohen_kappa_score, average_precision_score, f1_score
+from sklearn.metrics import roc_auc_score, cohen_kappa_score, average_precision_score, f1_score, fbeta_score
 from realtime_generator import RealtimeDataGenerator
 from models.lstm_model import build_lstm_model
 from drift_detection.adwin import ADWINDriftDetector
@@ -13,14 +13,10 @@ from drift_detection.dual import DualDriftDetector
 from memory.random import RandomReplayBuffer
 from memory.balanced import BalancedReplayBuffer
 
-
-# ---------------------------------------------------------------------------
-# Hyperparameters
-# ---------------------------------------------------------------------------
 FRAUD_RATIO   = 0.035                          # Approx ratio for IEEE dataset
 CLASS_WEIGHT  = {0: 1.0, 1: round(1.0 / FRAUD_RATIO)}  # {normal:1, fraud:~29}
 BASE_LR       = 0.001
-DRIFT_LR      = 0.005   # 5× base – fast adaptation immediately after drift
+DRIFT_LR      = 0.010   # 10× base – fast adaptation immediately after drift
 
 
 class AdaptiveThreshold:
@@ -35,30 +31,27 @@ class AdaptiveThreshold:
         self.y_prob_cache.extend(y_prob_batch.flatten())
 
     def update_threshold(self):
-        """Finds the optimal threshold to maximize F1-score over recent history."""
         if len(self.y_true_cache) < 200:
-            return self.current_threshold  # Not enough data yet
+            return self.current_threshold  
 
         y_true = np.array(self.y_true_cache)
         y_prob = np.array(self.y_prob_cache)
         
-        # If no fraud in history, keep current threshold
         if np.sum(y_true) == 0:
             return self.current_threshold
 
         best_thresh = self.current_threshold
-        best_f1 = 0.0
+        best_score = 0.0
 
-        for thresh in np.arange(0.10, 0.60, 0.05):
+        for thresh in np.arange(0.05, 0.60, 0.02):
             preds = (y_prob > thresh).astype(int)
-            f1 = f1_score(y_true, preds, zero_division=0)
-            if f1 > best_f1:
-                best_f1 = f1
+            score = fbeta_score(y_true, preds, beta=2.0, zero_division=0)
+            if score > best_score:
+                best_score = score
                 best_thresh = thresh
                 
         self.current_threshold = best_thresh
         return self.current_threshold
-
 
 class ContinualLearner:
     def __init__(self, config_name, detector_type, memory_type,
@@ -73,35 +66,28 @@ class ContinualLearner:
         elif detector_type == 'dual':
             self.detector = DualDriftDetector()
         else:
-            self.detector = None  # Static baseline – no detection
+            self.detector = None  
 
         if memory_type == 'random':
             self.memory = RandomReplayBuffer()
         elif memory_type == 'balanced':
             self.memory = BalancedReplayBuffer()
         else:
-            self.memory = None  # No memory replay
+            self.memory = None
             
-        self.adaptive_threshold = AdaptiveThreshold(window_size=1000)
+        self.adaptive_threshold = AdaptiveThreshold(window_size=300)
         self.metrics_log = []
         self.drift_events = []
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _set_lr(self, lr: float):
-        """Dynamically change the optimizer's learning rate."""
         self.model.optimizer.learning_rate = lr
 
     def _train(self, X_dict, y, lr=None):
-        """Train one step. Optionally set a custom LR."""
         if lr is not None:
             self._set_lr(lr)
         self.model.train_on_batch(X_dict, y)
 
     def _batch_metrics(self, preds_binary, preds_prob, y):
-        """Compute accuracy, precision, recall, f1, roc_auc, pr_auc, and kappa."""
         acc = float(np.mean(preds_binary == y))
 
         tp = int(np.sum((preds_binary == 1) & (y == 1)))
@@ -116,12 +102,12 @@ class ContinualLearner:
         try:
             roc_auc = float(roc_auc_score(y, preds_prob))
         except ValueError:
-            roc_auc = 0.5  # Neutral score if only one class is present
+            roc_auc = 0.5
 
         try:
             pr_auc = float(average_precision_score(y, preds_prob))
         except ValueError:
-            pr_auc = 0.0  # Undefined if only one class present
+            pr_auc = 0.0
 
         try:
             kappa = float(cohen_kappa_score(y, preds_binary))
@@ -130,44 +116,27 @@ class ContinualLearner:
 
         return acc, precision, recall, f1, roc_auc, pr_auc, kappa
 
-    # ------------------------------------------------------------------
-    # Main streaming loop
-    # ------------------------------------------------------------------
-
     def process_stream(self, generator, num_batches, batch_size=64,
                        drift_prob=0.002, use_adaptive_thresh=True):
-        """Processes a data stream, simulating continual learning."""
 
         print(f"\nStarting simulation for configuration: {self.config_name}")
-
-        # ---------------------------------------------------------------
-        # Bootstrap: train for 100 batches before streaming to give the
-        # model a decent starting point (with class weights from the start).
-        # ---------------------------------------------------------------
         print("Bootstrapping model...")
-        for _ in range(250):  # Extended: 250 batches = 16,000 transactions
+        for _ in range(500):
             X, y = generator.generate_batch(batch_size)
             self._train(X, y)
             if self.memory:
                 for i in range(batch_size):
                     x_i = {k: v[i] for k, v in X.items()}
                     self.memory.add(x_i, y[i])
-
-        # ---------------------------------------------------------------
-        # Streaming phase
-        # ---------------------------------------------------------------
         for batch_idx in tqdm(range(num_batches), desc=self.config_name):
 
             X, y = generator.generate_batch(batch_size)
 
-            # --- Predict (using direct model call to avoid TensorFlow predict() memory leak) ---
             preds = self.model(X, training=False).numpy().ravel()
             y_flat = y.ravel()
             
-            # --- Dynamic Threshold Optimization ---
             if use_adaptive_thresh:
                 self.adaptive_threshold.add(y_flat, preds)
-                # Re-tune threshold every 100 batches
                 if batch_idx > 0 and batch_idx % 100 == 0:
                     self.adaptive_threshold.update_threshold()
                 decision_thresh = self.adaptive_threshold.current_threshold
@@ -219,11 +188,27 @@ class ContinualLearner:
                 self.drift_events.append(batch_idx)
 
                 if self.memory and len(self.memory.normal_buffer if isinstance(self.memory, BalancedReplayBuffer) else self.memory.buffer) > 500:
-                    self.memory.clear()
+                    if isinstance(self.memory, BalancedReplayBuffer):
+                        self.memory.partial_clear(clear_fraud=False)
+                    else:
+                        self.memory.clear()
 
-                # Fine-tune at elevated LR on the current batch.
+                # Fine-tune at elevated LR on a mix of current batch and memory (if available)
                 for _ in range(10):
-                    self._train(X, y, lr=DRIFT_LR)
+                    if self.memory and len(self.memory.normal_buffer if isinstance(self.memory, BalancedReplayBuffer) else self.memory.buffer) >= batch_size:
+                        X_mem, y_mem = self.memory.sample(batch_size)
+                        if len(y_mem) > 0:
+                            X_combined = {k: np.concatenate((X[k], X_mem[k])) for k in X.keys()}
+                            y_combined = np.concatenate((y, y_mem))
+                            indices = np.arange(len(y_combined))
+                            np.random.shuffle(indices)
+                            X_combined = {k: X_combined[k][indices] for k in X_combined.keys()}
+                            y_combined = y_combined[indices]
+                            self._train(X_combined, y_combined, lr=DRIFT_LR)
+                        else:
+                            self._train(X, y, lr=DRIFT_LR)
+                    else:
+                        self._train(X, y, lr=DRIFT_LR)
 
                 # Restore base LR for stable online learning
                 self._set_lr(BASE_LR)

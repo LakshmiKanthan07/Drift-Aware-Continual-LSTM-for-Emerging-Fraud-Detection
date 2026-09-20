@@ -70,8 +70,8 @@ def load_data():
         if key in LABELS:
             try:
                 df = pd.read_csv(f)
-                if 'drift_batch' in df.columns and not df['drift_batch'].empty:
-                    raw = df['drift_batch'].dropna().tolist()
+                if not df.empty:
+                    raw = df.iloc[:, 0].dropna().tolist()
                     drifts[key] = [int(d) for d in raw]
                 else:
                     drifts[key] = []

@@ -2,7 +2,7 @@ import random
 import numpy as np
 
 class BalancedReplayBuffer:
-    def __init__(self, capacity=2000):
+    def __init__(self, capacity=5000):
         """
         Maintains separate buffers for normal and fraud transactions to ensure
         balanced sampling during replay.
@@ -68,3 +68,12 @@ class BalancedReplayBuffer:
         """Clears all samples from the buffer."""
         self.normal_buffer = []
         self.fraud_buffer = []
+
+    def partial_clear(self, clear_fraud=False):
+        """
+        Clears the normal buffer to forget old concepts upon drift.
+        Optionally keeps the fraud buffer intact to preserve rare signals.
+        """
+        self.normal_buffer = []
+        if clear_fraud:
+            self.fraud_buffer = []
