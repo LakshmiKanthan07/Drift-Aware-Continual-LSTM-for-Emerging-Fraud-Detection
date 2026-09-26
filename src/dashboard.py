@@ -33,6 +33,7 @@ PALETTE = {
     'Config_A_ADWIN_and_Random':             '#3498db',
     'Config_B_Window_and_Balanced':          '#2ecc71',
     'Config_C_Dual_and_Dynamic_and_Residual':'#9b59b6',
+    'Config_D_EWC_Continual_LSTM':           '#e67e22',
 }
 LABELS = {
     'Static_MLP_Baseline':                   'Static MLP Baseline',
@@ -40,8 +41,8 @@ LABELS = {
     'Config_A_ADWIN_and_Random':             'Config A  (ADWIN + Random)',
     'Config_B_Window_and_Balanced':          'Config B  (Window + Balanced)',
     'Config_C_Dual_and_Dynamic_and_Residual':'Config C (Continual LSTM)',
+    'Config_D_EWC_Continual_LSTM':           'Config D (EWC Continual LSTM)',
 }
-
 
 @st.cache_data
 def load_data():
@@ -104,8 +105,27 @@ selected_metric = st.sidebar.selectbox(
 show_drift_lines = st.sidebar.checkbox("Show drift event markers", value=True)
 
 # --------------------------------------------------------------------------- #
-#  KPI Cards                                                                    #
+#  Champion / Best Model Banner                                                #
 # --------------------------------------------------------------------------- #
+best_file = os.path.join(data_dir, 'best_model_results.csv')
+if os.path.exists(best_file):
+    try:
+        best_df = pd.read_csv(best_file)
+        if not best_df.empty:
+            b_rec = best_df.iloc[0].to_dict()
+            st.markdown("---")
+            st.subheader("🏆 Champion / Best Historical Model Benchmark")
+            
+            b_col1, b_col2, b_col3, b_col4, b_col5 = st.columns(5)
+            b_col1.metric("Champion Model", str(b_rec.get('config_name', 'N/A')))
+            b_col2.metric("Best F1 Score", f"{float(b_rec.get('f1', 0.0)):.4f}")
+            b_col3.metric("Best ROC-AUC", f"{float(b_rec.get('roc_auc', 0.0)):.4f}")
+            b_col4.metric("Best PR-AUC", f"{float(b_rec.get('pr_auc', 0.0)):.4f}")
+            b_col5.metric("Git Commit", str(b_rec.get('git_commit', 'N/A')))
+            
+            st.caption(f"📅 Best benchmark recorded at: {b_rec.get('timestamp', 'N/A')} using metric: {b_rec.get('primary_metric_used', 'f1').upper()}")
+    except Exception as e:
+        pass
 st.markdown("---")
 st.subheader("📈 Summary Statistics (last 100 batches)")
 
@@ -132,9 +152,6 @@ for col, name in zip(kpi_cols, names):
         st.metric("Avg Recall (last 100)", f"{avg_recall:.3f}")
         st.metric("Drift events detected", n_drifts)
 
-# --------------------------------------------------------------------------- #
-#  Time-series plot                                                             #
-# --------------------------------------------------------------------------- #
 st.markdown("---")
 st.subheader(f"📊 {selected_metric.capitalize()} over Time")
 

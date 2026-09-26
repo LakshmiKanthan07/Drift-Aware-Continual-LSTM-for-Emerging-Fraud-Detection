@@ -2,7 +2,7 @@ from river.drift import ADWIN
 
 
 class ADWINDriftDetector:
-    def __init__(self, delta=0.002):
+    def __init__(self, delta=0.0002):  # Tightened from 0.002 → 0.0002 for earlier drift detection
         """
         Wrapper around River's ADWIN algorithm.
         Instead of per-sample error, we feed per-batch F1 scores.

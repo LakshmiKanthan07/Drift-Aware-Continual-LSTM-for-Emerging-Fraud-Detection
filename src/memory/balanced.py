@@ -77,3 +77,7 @@ class BalancedReplayBuffer:
         self.normal_buffer = []
         if clear_fraud:
             self.fraud_buffer = []
+
+    @property
+    def size(self):
+        return len(self.normal_buffer) + len(self.fraud_buffer)

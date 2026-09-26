@@ -38,3 +38,11 @@ class RandomReplayBuffer:
 
     def clear(self):
         self.buffer = []
+
+    def partial_clear(self, clear_fraud=False):
+        """Compatibility shim — clears the whole buffer (no class separation)."""
+        self.buffer = []
+
+    @property
+    def size(self):
+        return len(self.buffer)

@@ -3,7 +3,8 @@ from tensorflow.keras.models import Model
 from tensorflow.keras.layers import (
     LSTM, Dense, Dropout, Input, Bidirectional,
     BatchNormalization, LeakyReLU, LayerNormalization,
-    Reshape, Multiply, GlobalAveragePooling1D, Concatenate, Flatten, Embedding, Lambda
+    Reshape, Multiply, GlobalAveragePooling1D, Concatenate, Flatten, Embedding, Lambda,
+    Conv1D, SpatialDropout1D, MultiHeadAttention, GlobalMaxPooling1D
 )
 from tensorflow.keras.regularizers import l2
 from tensorflow.keras.optimizers import Adam
@@ -62,23 +63,35 @@ def build_lstm_model(seq_len, num_cont_features, cat_vocab_dict, learning_rate=0
     # Save the attended features for the residual skip connection (only last timestep)
     shortcut = Lambda(lambda z: z[:, -1, :], name='shortcut_last_step')(x_attn)
 
+    # Local feature extraction
+    x = Conv1D(filters=total_features, kernel_size=3, padding='same', activation='relu', name='conv1d_1')(x_attn)
+    x = SpatialDropout1D(0.2, name='spatial_drop_1')(x)
+
     # First BiLSTM Layer
     x = Bidirectional(
-        LSTM(128, return_sequences=True, kernel_regularizer=l2(1e-4)),
+        LSTM(256, return_sequences=True, kernel_regularizer=l2(1e-4)),
         name='bilstm_1'
-    )(x_attn)
+    )(x)
     x = LayerNormalization(name='ln_1')(x)
     x = Dropout(0.2, name='drop_1')(x)
 
     # Second BiLSTM Layer
     x = Bidirectional(
-        LSTM(64, return_sequences=False, kernel_regularizer=l2(1e-4)),
+        LSTM(128, return_sequences=True, kernel_regularizer=l2(1e-4)),
         name='bilstm_2'
     )(x)
     x = LayerNormalization(name='ln_2')(x)
     x = Dropout(0.2, name='drop_2')(x)
     
-    x = Concatenate(name='residual_concat')([x, shortcut])
+    # Temporal Self-Attention
+    x_self_attn = MultiHeadAttention(num_heads=4, key_dim=64, name='temporal_attn')(x, x)
+    x = LayerNormalization(name='ln_attn')(x + x_self_attn) # Add & Norm
+
+    # Pooling
+    x_avg = GlobalAveragePooling1D(name='global_avg_pool')(x)
+    x_max = GlobalMaxPooling1D(name='global_max_pool')(x)
+    
+    x = Concatenate(name='residual_concat')([x_avg, x_max, shortcut])
 
     # Classification Head
     x = Dense(128, kernel_regularizer=l2(1e-4), name='dense_1')(x)
@@ -97,7 +110,7 @@ def build_lstm_model(seq_len, num_cont_features, cat_vocab_dict, learning_rate=0
     optimizer = Adam(learning_rate=learning_rate, clipnorm=1.0)
     model.compile(
         optimizer=optimizer,
-        loss=tf.keras.losses.BinaryFocalCrossentropy(gamma=2.0, alpha=0.85),
+        loss=tf.keras.losses.BinaryFocalCrossentropy(gamma=3.0, alpha=0.95),  # gamma 2→3, alpha 0.85→0.95
         metrics=[
             'accuracy',
             tf.keras.metrics.Precision(name='precision'),
