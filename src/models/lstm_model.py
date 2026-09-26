@@ -83,9 +83,15 @@ def build_lstm_model(seq_len, num_cont_features, cat_vocab_dict, learning_rate=0
     x = LayerNormalization(name='ln_2')(x)
     x = Dropout(0.2, name='drop_2')(x)
     
-    # Temporal Self-Attention
-    x_self_attn = MultiHeadAttention(num_heads=4, key_dim=64, name='temporal_attn')(x, x)
-    x = LayerNormalization(name='ln_attn')(x + x_self_attn) # Add & Norm
+    # Transformer Encoder Block (Self-Attention + FFN)
+    x_self_attn = MultiHeadAttention(num_heads=8, key_dim=64, dropout=0.1, name='temporal_attn')(x, x)
+    x = LayerNormalization(name='ln_attn_1')(x + x_self_attn)
+    
+    # Feed-Forward Network (FFN)
+    ffn = Dense(256, activation='relu', kernel_regularizer=l2(1e-4), name='ffn_1')(x)
+    ffn = Dropout(0.1, name='ffn_drop')(ffn)
+    ffn = Dense(x.shape[-1], kernel_regularizer=l2(1e-4), name='ffn_2')(ffn)
+    x = LayerNormalization(name='ln_attn_2')(x + ffn)
 
     # Pooling
     x_avg = GlobalAveragePooling1D(name='global_avg_pool')(x)

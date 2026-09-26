@@ -324,6 +324,7 @@ def run_simulation():
         {'name': 'Config B (Window + Balanced)', 'detector': 'window', 'memory': 'balanced', 'is_classical': False},
         {'name': 'Config C (Dual + Dynamic + Residual)', 'detector': 'dual', 'memory': 'balanced', 'is_classical': False},
         {'name': 'Config D (EWC Continual LSTM)', 'detector': 'dual', 'memory': 'balanced', 'is_classical': False, 'use_ewc': True},
+        {'name': 'Config E (Hybrid Transformer + ADWIN + EWC + Prioritized)', 'detector': 'adwin', 'memory': 'prioritized', 'is_classical': False, 'use_ewc': True},
     ]
 
     generator = RealtimeDataGenerator(seq_len=10)  # Increased from 5 → 10 for richer temporal context

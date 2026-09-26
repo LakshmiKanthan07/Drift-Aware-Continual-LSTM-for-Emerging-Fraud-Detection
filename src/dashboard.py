@@ -34,6 +34,7 @@ PALETTE = {
     'Config_B_Window_and_Balanced':          '#2ecc71',
     'Config_C_Dual_and_Dynamic_and_Residual':'#9b59b6',
     'Config_D_EWC_Continual_LSTM':           '#e67e22',
+    'Config_E_Hybrid_Transformer_and_ADWIN_and_EWC_and_Prioritized': '#00d2d3',
 }
 LABELS = {
     'Static_MLP_Baseline':                   'Static MLP Baseline',
@@ -42,6 +43,7 @@ LABELS = {
     'Config_B_Window_and_Balanced':          'Config B  (Window + Balanced)',
     'Config_C_Dual_and_Dynamic_and_Residual':'Config C (Continual LSTM)',
     'Config_D_EWC_Continual_LSTM':           'Config D (EWC Continual LSTM)',
+    'Config_E_Hybrid_Transformer_and_ADWIN_and_EWC_and_Prioritized': 'Config E (Hybrid Transformer)',
 }
 
 @st.cache_data
