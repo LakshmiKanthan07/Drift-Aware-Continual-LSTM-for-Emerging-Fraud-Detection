@@ -69,7 +69,7 @@ def build_lstm_model(seq_len, num_cont_features, cat_vocab_dict, learning_rate=0
 
     # First BiLSTM Layer
     x = Bidirectional(
-        LSTM(256, return_sequences=True, kernel_regularizer=l2(1e-4)),
+        LSTM(128, return_sequences=True, kernel_regularizer=l2(1e-4)),
         name='bilstm_1'
     )(x)
     x = LayerNormalization(name='ln_1')(x)
@@ -77,14 +77,14 @@ def build_lstm_model(seq_len, num_cont_features, cat_vocab_dict, learning_rate=0
 
     # Second BiLSTM Layer
     x = Bidirectional(
-        LSTM(128, return_sequences=True, kernel_regularizer=l2(1e-4)),
+        LSTM(64, return_sequences=True, kernel_regularizer=l2(1e-4)),
         name='bilstm_2'
     )(x)
     x = LayerNormalization(name='ln_2')(x)
     x = Dropout(0.2, name='drop_2')(x)
     
     # Transformer Encoder Block (Self-Attention + FFN)
-    x_self_attn = MultiHeadAttention(num_heads=8, key_dim=64, dropout=0.1, name='temporal_attn')(x, x)
+    x_self_attn = MultiHeadAttention(num_heads=4, key_dim=32, dropout=0.1, name='temporal_attn')(x, x)
     x = LayerNormalization(name='ln_attn_1')(x + x_self_attn)
     
     # Feed-Forward Network (FFN)
@@ -116,7 +116,7 @@ def build_lstm_model(seq_len, num_cont_features, cat_vocab_dict, learning_rate=0
     optimizer = Adam(learning_rate=learning_rate, clipnorm=1.0)
     model.compile(
         optimizer=optimizer,
-        loss=tf.keras.losses.BinaryFocalCrossentropy(gamma=3.0, alpha=0.95),  # gamma 2→3, alpha 0.85→0.95
+        loss=tf.keras.losses.BinaryFocalCrossentropy(gamma=2.0, alpha=0.80),
         metrics=[
             'accuracy',
             tf.keras.metrics.Precision(name='precision'),

@@ -83,12 +83,15 @@ class BestModelTracker:
             'config_name': config_name,
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'f1': float(eval_df['f1'].mean()) if 'f1' in eval_df else 0.0,
+            'f2': float(eval_df['f2'].mean()) if 'f2' in eval_df else 0.0,
             'roc_auc': float(eval_df['roc_auc'].mean()) if 'roc_auc' in eval_df else 0.0,
             'pr_auc': float(eval_df['pr_auc'].mean()) if 'pr_auc' in eval_df else 0.0,
             'accuracy': float(eval_df['accuracy'].mean()) if 'accuracy' in eval_df else 0.0,
             'precision': float(eval_df['precision'].mean()) if 'precision' in eval_df else 0.0,
             'recall': float(eval_df['recall'].mean()) if 'recall' in eval_df else 0.0,
             'kappa': float(eval_df['kappa'].mean()) if 'kappa' in eval_df else 0.0,
+            'savings': float(eval_df['savings'].mean()) if 'savings' in eval_df else 0.0,
+            'precision_at_1_percent': float(eval_df['precision_at_1_percent'].mean()) if 'precision_at_1_percent' in eval_df else 0.0,
             'git_commit': get_git_commit_hash(),
             'primary_metric_used': eval_metric
         }

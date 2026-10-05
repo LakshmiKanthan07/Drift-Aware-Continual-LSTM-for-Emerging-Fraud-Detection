@@ -9,3 +9,4 @@ river
 tqdm
 xgboost
 lightgbm
+plotly
