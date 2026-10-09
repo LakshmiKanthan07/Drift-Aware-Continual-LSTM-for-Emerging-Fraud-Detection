@@ -18,7 +18,7 @@ class DualDriftDetector:
         self.window      = WindowDriftDetector(window_size=window_size,
                                                threshold_drop=threshold_drop,
                                                cooldown=cooldown)
-        self.last_drift_severity = 0.0   # 0.0–1.0 magnitude of detected drop
+        self.last_drift_severity = 0.0
 
     def update(self, recall_val: float, f2_val: float, pr_auc_val: float = 0.0) -> bool:
         """
@@ -30,7 +30,6 @@ class DualDriftDetector:
         drift_win   = self.window.update(recall_val)
 
         if drift_f2 or drift_prauc or drift_win:
-            # Severity: how far recall / f2 have fallen (higher = worse drift)
             self.last_drift_severity = max(
                 1.0 - recall_val,
                 1.0 - f2_val,

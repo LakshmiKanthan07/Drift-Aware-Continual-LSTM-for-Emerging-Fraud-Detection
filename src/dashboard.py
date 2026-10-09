@@ -9,14 +9,13 @@ from plotly.subplots import make_subplots
 
 st.set_page_config(
     page_title="Drift-Aware LSTM Dashboard",
-    page_icon="🛡️",
     layout="wide"
 )
 
 # --------------------------------------------------------------------------- #
 #  Page Header                                                                  #
 # --------------------------------------------------------------------------- #
-st.title("🛡️ Drift-Aware Continual LSTM for Fraud Detection")
+st.title("Drift-Aware Continual LSTM for Fraud Detection")
 st.markdown(
     "Comparing a **Static Baseline** against continual-learning "
     "configurations that detect and adapt to emerging fraud patterns."
@@ -106,7 +105,7 @@ n_seeds = min(len(v) for v in seeds.values())
 # --------------------------------------------------------------------------- #
 #  Sidebar                                                                      #
 # --------------------------------------------------------------------------- #
-st.sidebar.header("⚙️ Controls")
+st.sidebar.header("Controls")
 names = st.sidebar.multiselect(
     "Models to display",
     options=all_names,
@@ -171,33 +170,13 @@ def tail_stats(key, metric):
     return float(np.mean(vals)), float(np.std(vals))
 
 
-# --------------------------------------------------------------------------- #
-#  Champion Banner                                                              #
-# --------------------------------------------------------------------------- #
-best_file = os.path.join(data_dir, 'best_model_results.csv')
-if os.path.exists(best_file):
-    try:
-        best_df = pd.read_csv(best_file)
-        if not best_df.empty:
-            b = best_df.iloc[0].to_dict()
-            st.markdown("---")
-            st.subheader("🏆 Champion / Best Historical Model Benchmark")
-            c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Champion Model", str(b.get('config_name', 'N/A')))
-            c2.metric("Best F1 Score", f"{float(b.get('f1', 0.0)):.4f}")
-            c3.metric("Best ROC-AUC", f"{float(b.get('roc_auc', 0.0)):.4f}")
-            c4.metric("Best PR-AUC", f"{float(b.get('pr_auc', 0.0)):.4f}")
-            c5.metric("Git Commit", str(b.get('git_commit', 'N/A')))
-            st.caption(f"📅 Recorded at: {b.get('timestamp', 'N/A')} "
-                       f"using metric: {str(b.get('primary_metric_used', 'f1')).upper()}")
-    except Exception:
-        pass
+# (Champion Banner removed)
 
 # --------------------------------------------------------------------------- #
 #  Summary Table (mean ± std, deltas vs baseline, best highlighted)             #
 # --------------------------------------------------------------------------- #
 st.markdown("---")
-st.subheader(f"📈 Summary Statistics (last {tail_n} batches)")
+st.subheader(f"Summary Statistics (last {tail_n} batches)")
 
 SUMMARY_COLS = [('pr_auc', 'PR-AUC'), ('roc_auc', 'ROC-AUC'), ('recall', 'Recall'),
                 ('precision', 'Precision'), ('f1', 'F1'), ('savings', 'Savings/batch ($)')]
@@ -233,7 +212,7 @@ def highlight_best(col):
 
 
 st.dataframe(disp_df.style.apply(highlight_best, axis=0), use_container_width=True)
-st.caption("🟩 Best value per metric. Values are mean ± std across independent seeds.")
+st.caption("Best value per metric. Values are mean ± std across independent seeds.")
 
 # Delta vs baseline cards
 if BASELINE in names and len(names) > 1:
@@ -255,7 +234,7 @@ if BASELINE in names and len(names) > 1:
 #  Primary metric over time                                                     #
 # --------------------------------------------------------------------------- #
 st.markdown("---")
-st.subheader(f"📊 {selected_metric} over Time")
+st.subheader(f"{selected_metric} over Time")
 
 fig = go.Figure()
 for k in names:
@@ -287,7 +266,7 @@ st.plotly_chart(fig, use_container_width=True)
 #  Cumulative savings + adaptive threshold                                      #
 # --------------------------------------------------------------------------- #
 st.markdown("---")
-st.subheader("💰 Cumulative Savings & 🎚️ Decision Threshold")
+st.subheader("Cumulative Savings & Decision Threshold")
 left, right = st.columns(2)
 
 with left:
@@ -317,7 +296,7 @@ with right:
 #  Recall + F1                                                                  #
 # --------------------------------------------------------------------------- #
 st.markdown("---")
-st.subheader("🔍 Recall vs F1 (fraud-focused)")
+st.subheader("Recall vs F1 (fraud-focused)")
 
 fig2 = make_subplots(rows=1, cols=2, subplot_titles=("Recall", "F1"), shared_xaxes=False)
 for ci, m in enumerate(['recall', 'f1'], start=1):
@@ -336,7 +315,7 @@ st.plotly_chart(fig2, use_container_width=True)
 #  Post-drift recovery                                                          #
 # --------------------------------------------------------------------------- #
 st.markdown("---")
-st.subheader(f"🩹 Drift Impact & Recovery ({selected_metric})")
+st.subheader(f"Drift Impact & Recovery ({selected_metric})")
 st.caption(f"Mean of the metric over {recovery_w} batches before vs. after each detected drift.")
 
 rec_rows = []
@@ -359,7 +338,7 @@ else:
 # --------------------------------------------------------------------------- #
 if gt_drifts:
     st.markdown("---")
-    st.subheader("🎯 Drift Detection Quality (vs. injected ground truth)")
+    st.subheader("Drift Detection Quality (vs. injected ground truth)")
     st.caption(f"True drifts at batches {gt_drifts}. A detection counts if it fires within "
                f"150 batches after a true drift; anything else is a false alarm.")
     MAX_DELAY = 150
@@ -391,7 +370,7 @@ if gt_drifts:
 #  Heatmap                                                                      #
 # --------------------------------------------------------------------------- #
 st.markdown("---")
-st.subheader(f"🗺️ Final Performance Heatmap (last {tail_n} batches)")
+st.subheader(f"Final Performance Heatmap (last {tail_n} batches)")
 
 hm_cols = [('recall', 'Recall'), ('f1', 'F1'), ('f2', 'F2'), ('precision', 'Precision'),
            ('precision_at_1_percent', 'Prec@1%'), ('accuracy', 'Accuracy')]
@@ -405,7 +384,7 @@ st.plotly_chart(fig3, use_container_width=True)
 #  Drift Timeline                                                               #
 # --------------------------------------------------------------------------- #
 st.markdown("---")
-st.subheader("⚡ Drift Event Timeline")
+st.subheader("Drift Event Timeline")
 
 drift_cols = st.columns(len(names))
 for col, k in zip(drift_cols, names):
@@ -425,7 +404,7 @@ for col, k in zip(drift_cols, names):
 #  Dynamic Insights                                                             #
 # --------------------------------------------------------------------------- #
 st.markdown("---")
-st.subheader("💡 Insights")
+st.subheader("Insights")
 
 STRATEGY = {
     'Static_Baseline_LSTM': "Non-adaptive sequential baseline",
@@ -455,12 +434,12 @@ if BASELINE in names:
     worse_pr = [lab(k) for k in names if k != BASELINE
                 and raw_df.loc[lab(k), 'PR-AUC'] < raw_df.loc[base_label, 'PR-AUC']]
     if worse_pr:
-        bullets.append("- ⚠️ Lower PR-AUC than the static baseline: " + ", ".join(worse_pr))
+        bullets.append("- Lower PR-AUC than the static baseline: " + ", ".join(worse_pr))
 total_drifts = sum(len(drifts.get(k, [])) for k in names if k != BASELINE)
 if total_drifts <= len(names):
-    bullets.append("- ⚠️ Very few drifts were detected, so adaptation is rarely exercised; "
+    bullets.append("- Very few drifts were detected, so adaptation is rarely exercised; "
                    "differences may be within seed noise.")
 if n_seeds == 1:
-    bullets.append("- ⚠️ Only one run per model; re-run the simulation with `NUM_SEEDS>1` "
+    bullets.append("- Only one run per model; re-run the simulation with `NUM_SEEDS>1` "
                    "for confidence intervals.")
 st.markdown("\n".join(bullets))

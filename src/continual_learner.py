@@ -1,4 +1,5 @@
 import os
+import glob
 import gc
 import time
 import tensorflow as tf
@@ -27,6 +28,16 @@ DRIFT_DECAY_STEPS = 100             # Doubled from 50 → 100 for smoother post-
 # EWC lambda bounds — dynamically scaled by drift severity
 EWC_LAMBDA_MIN = 500.0    # Low regularization on severe drift  → allow plasticity
 EWC_LAMBDA_MAX = 8000.0   # High regularization on mild drift   → prevent forgetting
+
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    try:
+        tf.keras.mixed_precision.set_global_policy('mixed_float16')
+        print("Mixed precision (FP16) enabled on GPU.")
+    except Exception as e:
+        print(f"Could not enable mixed precision: {e}")
+else:
+    print("No GPU detected. Running on CPU using default float32.")
 
 class AdaptiveThreshold:
     def __init__(self, window_size=1000):
@@ -119,8 +130,13 @@ class ContinualLearner:
         return BASE_LR + 0.5 * (DRIFT_LR - BASE_LR) * (1 + np.cos(np.pi * progress))
 
     def _project_gradients(self, grads, grads_ref):
-        flat_grads = tf.concat([tf.reshape(g, [-1]) for g in grads if g is not None], axis=0)
-        flat_grads_ref = tf.concat([tf.reshape(g, [-1]) for g in grads_ref if g is not None], axis=0)
+        # Convert any IndexedSlices (e.g. from Embedding layers) to dense tensors 
+        # so that tf.function if/else branches return matching types
+        dense_grads = [tf.convert_to_tensor(g) if g is not None else None for g in grads]
+        dense_grads_ref = [tf.convert_to_tensor(g) if g is not None else None for g in grads_ref]
+        
+        flat_grads = tf.concat([tf.reshape(g, [-1]) for g in dense_grads if g is not None], axis=0)
+        flat_grads_ref = tf.concat([tf.reshape(g, [-1]) for g in dense_grads_ref if g is not None], axis=0)
         
         dot_product = tf.reduce_sum(flat_grads * flat_grads_ref)
         if dot_product < 0:
@@ -129,7 +145,7 @@ class ContinualLearner:
             
             projected_grads = []
             offset = 0
-            for g in grads:
+            for g in dense_grads:
                 if g is not None:
                     shape = tf.shape(g)
                     size = tf.reduce_prod(shape)
@@ -139,7 +155,40 @@ class ContinualLearner:
                 else:
                     projected_grads.append(None)
             return projected_grads
-        return grads
+        return dense_grads
+
+    @tf.function(reduce_retracing=True)
+    def _train_ewc_step(self, X_dict, y, sample_weights, fisher_matrix, opt_weights, ewc_lambda):
+        with tf.GradientTape() as tape:
+            preds = self.model(X_dict, training=True)
+            base_loss = self.model.compiled_loss(y, preds, sample_weight=sample_weights)
+            
+            ewc_loss = 0.0
+            for weight, fisher, opt_weight in zip(self.model.trainable_weights, fisher_matrix, opt_weights):
+                ewc_loss += tf.reduce_sum(fisher * tf.square(weight - opt_weight))
+                
+            total_loss = base_loss + (ewc_lambda / 2.0) * ewc_loss
+            
+        grads = tape.gradient(total_loss, self.model.trainable_weights)
+        self.model.optimizer.apply_gradients(zip(grads, self.model.trainable_weights))
+
+    @tf.function(reduce_retracing=True)
+    def _train_agem_step(self, X_dict, y, sample_weights, X_ref, y_ref, ref_weights):
+        # 1. Compute gradients for reference memory batch
+        with tf.GradientTape() as tape_ref:
+            preds_ref = self.model(X_ref, training=True)
+            loss_ref = self.model.compiled_loss(y_ref, preds_ref, sample_weight=ref_weights)
+        grads_ref = tape_ref.gradient(loss_ref, self.model.trainable_weights)
+        
+        # 2. Compute gradients for current batch
+        with tf.GradientTape() as tape:
+            preds = self.model(X_dict, training=True)
+            loss = self.model.compiled_loss(y, preds, sample_weight=sample_weights)
+        grads = tape.gradient(loss, self.model.trainable_weights)
+        
+        # 3. Project and apply
+        grads_proj = self._project_gradients(grads, grads_ref)
+        self.model.optimizer.apply_gradients(zip(grads_proj, self.model.trainable_weights))
 
     def _train(self, X_dict, y, lr=None, apply_ewc=False, apply_agem=False):
         if lr is not None:
@@ -148,39 +197,16 @@ class ContinualLearner:
         sample_weights = np.where(y.ravel() == 1, CLASS_WEIGHT[1], CLASS_WEIGHT[0]).astype(np.float32)
         
         if apply_ewc and hasattr(self, 'fisher_matrix'):
-            with tf.GradientTape() as tape:
-                preds = self.model(X_dict, training=True)
-                # Compute base loss
-                base_loss = self.model.compiled_loss(y, preds, sample_weight=sample_weights)
-                
-                # Add EWC penalty with dynamic lambda
-                ewc_loss = 0.0
-                for weight, fisher, opt_weight in zip(self.model.trainable_weights, self.fisher_matrix, self.opt_weights):
-                    ewc_loss += tf.reduce_sum(fisher * tf.square(weight - opt_weight))
-                
-                total_loss = base_loss + (self._ewc_lambda / 2.0) * ewc_loss
-                
-            grads = tape.gradient(total_loss, self.model.trainable_weights)
-            self.model.optimizer.apply_gradients(zip(grads, self.model.trainable_weights))
+            self._train_ewc_step(
+                X_dict, y, sample_weights, 
+                self.fisher_matrix, self.opt_weights, 
+                tf.constant(self._ewc_lambda, dtype=tf.float32)
+            )
             
         elif apply_agem and self.memory and self._memory_size() > 0:
-            # 1. Compute gradients for reference memory batch
             X_ref, y_ref = self.memory.sample(min(32, self._memory_size()))
             ref_weights = np.where(y_ref.ravel() == 1, CLASS_WEIGHT[1], CLASS_WEIGHT[0]).astype(np.float32)
-            with tf.GradientTape() as tape_ref:
-                preds_ref = self.model(X_ref, training=True)
-                loss_ref = self.model.compiled_loss(y_ref, preds_ref, sample_weight=ref_weights)
-            grads_ref = tape_ref.gradient(loss_ref, self.model.trainable_weights)
-            
-            # 2. Compute gradients for current batch
-            with tf.GradientTape() as tape:
-                preds = self.model(X_dict, training=True)
-                loss = self.model.compiled_loss(y, preds, sample_weight=sample_weights)
-            grads = tape.gradient(loss, self.model.trainable_weights)
-            
-            # 3. Project and apply
-            grads_proj = self._project_gradients(grads, grads_ref)
-            self.model.optimizer.apply_gradients(zip(grads_proj, self.model.trainable_weights))
+            self._train_agem_step(X_dict, y, sample_weights, X_ref, y_ref, ref_weights)
             
         else:
             self.model.train_on_batch(X_dict, y, sample_weight=sample_weights)
@@ -219,7 +245,7 @@ class ContinualLearner:
             
         self.fisher_matrix = [f / float(max(1, num_batches)) for f in fisher_matrix]
 
-    def _batch_metrics(self, preds_binary, preds_prob, y):
+    def _batch_metrics(self, preds_binary, preds_prob, y, batch_idx=0):
         acc = float(np.mean(preds_binary == y))
 
         tp = int(np.sum((preds_binary == 1) & (y == 1)))
@@ -242,15 +268,21 @@ class ContinualLearner:
         top_k_y = y[top_k_indices]
         precision_at_k = float(np.mean(top_k_y)) if len(top_k_y) > 0 else 0.0
 
-        try:
-            roc_auc = float(roc_auc_score(y, preds_prob))
-        except ValueError:
-            roc_auc = 0.5
-
-        try:
-            pr_auc = float(average_precision_score(y, preds_prob))
-        except ValueError:
-            pr_auc = 0.0
+        if batch_idx % 5 == 0:
+            try:
+                roc_auc = float(roc_auc_score(y, preds_prob))
+            except ValueError:
+                roc_auc = 0.5
+            try:
+                pr_auc = float(average_precision_score(y, preds_prob))
+            except ValueError:
+                pr_auc = 0.0
+            
+            self._last_roc_auc = roc_auc
+            self._last_pr_auc = pr_auc
+        else:
+            roc_auc = getattr(self, '_last_roc_auc', 0.5)
+            pr_auc = getattr(self, '_last_pr_auc', 0.0)
 
         try:
             kappa = float(cohen_kappa_score(y, preds_binary))
@@ -304,6 +336,7 @@ class ContinualLearner:
         elif bootstrap_key is not None:
             ContinualLearner._BOOTSTRAP_CACHE[bootstrap_key] = self.model.get_weights()
         for batch_idx in tqdm(range(num_batches), desc=self.config_name):
+            batch_start_time = time.perf_counter()
 
             X, y = generator.generate_batch(batch_size)
 
@@ -319,9 +352,9 @@ class ContinualLearner:
                 
             preds_binary = (preds > decision_thresh).astype(int)
 
-            acc, precision, recall, f1, f2, roc_auc, pr_auc, kappa, savings, precision_at_k = self._batch_metrics(preds_binary, preds, y_flat)
+            acc, precision, recall, f1, f2, roc_auc, pr_auc, kappa, savings, precision_at_k = self._batch_metrics(preds_binary, preds, y_flat, batch_idx=batch_idx)
 
-            self.metrics_log.append({
+            log_entry = {
                 'batch':     batch_idx,
                 'accuracy':  acc,
                 'precision': precision,
@@ -334,7 +367,8 @@ class ContinualLearner:
                 'savings':   savings,
                 'precision_at_1_percent': precision_at_k,
                 'threshold': decision_thresh
-            })
+            }
+            self.metrics_log.append(log_entry)
 
             # --- Delayed label feedback ---
             pending.append((X, y, y_flat, preds, recall, f2, pr_auc))
@@ -423,6 +457,8 @@ class ContinualLearner:
                         self._train(X, y, lr=BASE_LR, apply_agem=self.use_agem)
                 else:
                     self._train(X, y, lr=BASE_LR, apply_agem=self.use_agem)
+
+            log_entry['latency_ms'] = (time.perf_counter() - batch_start_time) * 1000.0
 
         return pd.DataFrame(self.metrics_log), self.drift_events
 
@@ -531,6 +567,9 @@ def run_simulation():
 
         execution_times[conf['name']] = float(np.mean(seed_times))
         
+        avg_latency = df['latency_ms'].mean() if 'latency_ms' in df.columns else 0.0
+        print(f"\n[{conf['name']}] Average Batch Latency: {avg_latency:.2f} ms")
+        
     COLOR_MAP = {
         'Static Baseline LSTM':               '#e74c3c',
         'Config A (ADWIN + Random)':          '#3498db',
@@ -557,6 +596,7 @@ def run_simulation():
     ax.set_title('Execution Time per Configuration', color='white',
                  fontsize=14, fontweight='bold', pad=12)
     ax.tick_params(colors='white')
+    ax.set_xticks(range(len(names)))
     ax.set_xticklabels(names, rotation=30, ha='right', color='white', fontsize=9)
     ax.yaxis.grid(True, color='#333333', linestyle='--', linewidth=0.7, zorder=1)
     for spine in ax.spines.values():
@@ -565,6 +605,56 @@ def run_simulation():
     fig.tight_layout()
     plt.savefig(os.path.join(DATA_DIR, 'execution_times.png'), dpi=150)
     plt.close()
+
+    # Dedicated plot for Average Batch Latency (ms)
+    latency_summary = {}
+    for conf in configs:
+        cname = conf['name']
+        safe = (cname.replace(' ', '_').replace('(', '').replace(')', '').replace('+', 'and'))
+        pattern = os.path.join(DATA_DIR, f'{safe}*_metrics.csv')
+        matched_files = glob.glob(pattern)
+        seed_means = []
+        for mf in matched_files:
+            try:
+                m_df = pd.read_csv(mf)
+                if 'latency_ms' in m_df.columns:
+                    v = m_df['latency_ms'].dropna()
+                    if len(v) > 0:
+                        seed_means.append(v.mean())
+            except Exception:
+                continue
+        if seed_means:
+            latency_summary[cname] = float(np.mean(seed_means))
+
+    if latency_summary:
+        fig_lat, ax_lat = plt.subplots(figsize=(12, 6))
+        fig_lat.patch.set_facecolor('#0e1117')
+        ax_lat.set_facecolor('#0e1117')
+
+        l_names = list(latency_summary.keys())
+        l_times = [latency_summary[k] for k in l_names]
+        l_colors = [COLOR_MAP.get(k, '#aaaaaa') for k in l_names]
+        l_bars = ax_lat.bar(l_names, l_times, color=l_colors, width=0.55, zorder=2)
+
+        for bar, t in zip(l_bars, l_times):
+            ax_lat.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + max(l_times)*0.015,
+                        f'{t:.1f} ms', ha='center', va='bottom', color='white',
+                        fontsize=10, fontweight='bold')
+
+        ax_lat.set_xlabel('Configuration', color='white', fontsize=12)
+        ax_lat.set_ylabel('Average Batch Latency (ms)', color='white', fontsize=12)
+        ax_lat.set_title('Average Batch Latency (ms) — Model Comparison', color='white',
+                         fontsize=14, fontweight='bold', pad=12)
+        ax_lat.tick_params(colors='white')
+        ax_lat.set_xticklabels(l_names, rotation=25, ha='right', color='white', fontsize=9)
+        ax_lat.yaxis.grid(True, color='#333333', linestyle='--', linewidth=0.7, zorder=1)
+        for spine in ax_lat.spines.values():
+            spine.set_visible(False)
+
+        fig_lat.tight_layout()
+        plt.savefig(os.path.join(DATA_DIR, 'batch_latencies.png'), dpi=150)
+        plt.close()
+        print(f"  Saved batch latency chart to {os.path.join(DATA_DIR, 'batch_latencies.png')}")
 
     metrics_summary = {}
     for conf in configs:

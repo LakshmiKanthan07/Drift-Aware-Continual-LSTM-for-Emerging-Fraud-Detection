@@ -22,9 +22,13 @@ class PrioritizedReplayBuffer:
         self.alpha = alpha
         self.half_capacity = capacity // 2
 
-        # Each entry: (x_dict, y, priority)
+        # Each entry: (x_dict, y)
         self.normal_buffer = []
         self.fraud_buffer = []
+        
+        # Priorities for fast sampling
+        self.normal_priorities = np.zeros(self.half_capacity, dtype=np.float32)
+        self.fraud_priorities = np.zeros(self.half_capacity, dtype=np.float32)
 
     def add(self, x_dict, y, priority=1.0):
         """
@@ -35,19 +39,26 @@ class PrioritizedReplayBuffer:
             y (np.ndarray): Label array.
             priority (float): Higher → more likely to be replayed. Typically |y - y_hat|.
         """
-        entry = (x_dict, y, float(priority) ** self.alpha)
+        priority_val = float(priority) ** self.alpha
+        entry = (x_dict, y)
         is_fraud = (y[0] == 1.0)
-        buffer = self.fraud_buffer if is_fraud else self.normal_buffer
-
-        if len(buffer) < self.half_capacity:
-            buffer.append(entry)
+        
+        if is_fraud:
+            buffer = self.fraud_buffer
+            priorities = self.fraud_priorities
         else:
-            # Replace lowest-priority existing sample with probability
-            # proportional to new sample's priority
+            buffer = self.normal_buffer
+            priorities = self.normal_priorities
+
+        curr_len = len(buffer)
+        if curr_len < self.half_capacity:
+            buffer.append(entry)
+            priorities[curr_len] = priority_val
+        else:
             idx = random.randint(0, self.half_capacity - 1)
-            # Replace if new priority >= existing, else replace randomly with 50% prob
-            if entry[2] >= buffer[idx][2] or random.random() < 0.5:
+            if priority_val >= priorities[idx] or random.random() < 0.5:
                 buffer[idx] = entry
+                priorities[idx] = priority_val
 
     def sample(self, batch_size):
         """
@@ -61,22 +72,29 @@ class PrioritizedReplayBuffer:
         n_fraud = int(batch_size * self.fraud_ratio)
         n_normal = batch_size - n_fraud
 
-        def priority_sample(buf, k):
-            if not buf:
+        def priority_sample(buf, priorities_arr, k):
+            n = len(buf)
+            if n == 0:
                 return []
-            weights = np.array([entry[2] for entry in buf], dtype=np.float64)
-            weights = weights / weights.sum()
-            k = min(k, len(buf))
-            indices = np.random.choice(len(buf), size=k, replace=False, p=weights)
+            
+            p = priorities_arr[:n]
+            p_sum = p.sum()
+            
+            if p_sum == 0:
+                indices = np.random.choice(n, size=min(k, n), replace=False)
+            else:
+                p = p / p_sum
+                indices = np.random.choice(n, size=min(k, n), replace=False, p=p)
+                
             return [buf[i] for i in indices]
 
-        fraud_samples = priority_sample(self.fraud_buffer, n_fraud)
-        normal_samples = priority_sample(self.normal_buffer, n_normal)
+        fraud_samples = priority_sample(self.fraud_buffer, self.fraud_priorities, n_fraud)
+        normal_samples = priority_sample(self.normal_buffer, self.normal_priorities, n_normal)
 
         # If not enough fraud, pad with extra normals
         shortfall = n_fraud - len(fraud_samples)
         if shortfall > 0:
-            extra = priority_sample(self.normal_buffer, shortfall + n_normal)
+            extra = priority_sample(self.normal_buffer, self.normal_priorities, shortfall + n_normal)
             normal_samples = extra
 
         batch = normal_samples + fraud_samples
