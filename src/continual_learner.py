@@ -239,8 +239,8 @@ class ContinualLearner:
     def _train(self, X_dict, y, lr=None, apply_ewc=False, apply_agem=False, freeze_features=False):
         if lr is not None:
             self._set_lr(lr)
-        # Build per-sample class weights array
-        sample_weights = np.where(y.ravel() == 1, CLASS_WEIGHT[1], CLASS_WEIGHT[0]).astype(np.float32)
+        # Remove redundant class weights; BinaryFocalCrossentropy handles it natively
+        sample_weights = np.ones_like(y.ravel(), dtype=np.float32)
         
         freeze = tf.constant(freeze_features, dtype=tf.bool)
         
