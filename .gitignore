@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+graphify-out/
 *.so
 build/
 dist/
@@ -34,3 +35,4 @@ desktop.ini
 .env
 .env.*
 !.env.example
+graphify_commands.txt

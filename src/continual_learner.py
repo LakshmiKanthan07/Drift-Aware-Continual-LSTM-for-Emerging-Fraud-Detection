@@ -22,8 +22,8 @@ from model_evaluator import BestModelTracker
 FRAUD_RATIO   = 0.035
 CLASS_WEIGHT  = {0: 1.0, 1: 20.0}   # Adjusted to 20 for focal loss calibration
 BASE_LR       = 0.001
-DRIFT_LR      = 0.003             # Lowered from 0.010: high LR on one batch collapsed precision
-DRIFT_DECAY_STEPS = 100             # Doubled from 50 → 100 for smoother post-drift recovery
+DRIFT_LR      = 0.0015            # Lowered from 0.003: gentle drift LR to prevent shock
+DRIFT_DECAY_STEPS = 200             # Doubled from 100 for smoother post-drift recovery
 
 # EWC lambda bounds — dynamically scaled by drift severity
 EWC_LAMBDA_MIN = 500.0    # Low regularization on severe drift  → allow plasticity
@@ -158,22 +158,37 @@ class ContinualLearner:
         return dense_grads
 
     @tf.function(reduce_retracing=True)
-    def _train_ewc_step(self, X_dict, y, sample_weights, fisher_matrix, opt_weights, ewc_lambda):
+    def _train_ewc_step(self, X_dict, y, sample_weights, fisher_matrix, opt_weights, ewc_lambda, freeze_features):
         with tf.GradientTape() as tape:
             preds = self.model(X_dict, training=True)
             base_loss = self.model.compiled_loss(y, preds, sample_weight=sample_weights)
             
             ewc_loss = 0.0
             for weight, fisher, opt_weight in zip(self.model.trainable_weights, fisher_matrix, opt_weights):
-                ewc_loss += tf.reduce_sum(fisher * tf.square(weight - opt_weight))
+                name = weight.name.lower()
+                multiplier = 2.0 if ('emb' in name or 'conv' in name) else (0.2 if 'dense' in name else 1.0)
+                ewc_loss += tf.reduce_sum(fisher * tf.square(weight - opt_weight)) * multiplier
                 
             total_loss = base_loss + (ewc_lambda / 2.0) * ewc_loss
             
         grads = tape.gradient(total_loss, self.model.trainable_weights)
+        grads = [tf.convert_to_tensor(g) if g is not None else None for g in grads]
+        
+        if freeze_features:
+            masked_grads = []
+            for g, w in zip(grads, self.model.trainable_weights):
+                if g is None:
+                    masked_grads.append(None)
+                elif 'dense' in w.name.lower() or 'se_fc' in w.name.lower():
+                    masked_grads.append(g)
+                else:
+                    masked_grads.append(tf.zeros_like(g))
+            grads = masked_grads
+            
         self.model.optimizer.apply_gradients(zip(grads, self.model.trainable_weights))
 
     @tf.function(reduce_retracing=True)
-    def _train_agem_step(self, X_dict, y, sample_weights, X_ref, y_ref, ref_weights):
+    def _train_agem_step(self, X_dict, y, sample_weights, X_ref, y_ref, ref_weights, freeze_features):
         # 1. Compute gradients for reference memory batch
         with tf.GradientTape() as tape_ref:
             preds_ref = self.model(X_ref, training=True)
@@ -188,28 +203,62 @@ class ContinualLearner:
         
         # 3. Project and apply
         grads_proj = self._project_gradients(grads, grads_ref)
+        if freeze_features:
+            masked_grads = []
+            for g, w in zip(grads_proj, self.model.trainable_weights):
+                if g is None:
+                    masked_grads.append(None)
+                elif 'dense' in w.name.lower() or 'se_fc' in w.name.lower():
+                    masked_grads.append(g)
+                else:
+                    masked_grads.append(tf.zeros_like(g))
+            grads_proj = masked_grads
+            
         self.model.optimizer.apply_gradients(zip(grads_proj, self.model.trainable_weights))
 
-    def _train(self, X_dict, y, lr=None, apply_ewc=False, apply_agem=False):
+    @tf.function(reduce_retracing=True)
+    def _train_standard_step(self, X_dict, y, sample_weights, freeze_features):
+        with tf.GradientTape() as tape:
+            preds = self.model(X_dict, training=True)
+            loss = self.model.compiled_loss(y, preds, sample_weight=sample_weights)
+        grads = tape.gradient(loss, self.model.trainable_weights)
+        grads = [tf.convert_to_tensor(g) if g is not None else None for g in grads]
+        
+        if freeze_features:
+            masked_grads = []
+            for g, w in zip(grads, self.model.trainable_weights):
+                if g is None:
+                    masked_grads.append(None)
+                elif 'dense' in w.name.lower() or 'se_fc' in w.name.lower():
+                    masked_grads.append(g)
+                else:
+                    masked_grads.append(tf.zeros_like(g))
+            grads = masked_grads
+        self.model.optimizer.apply_gradients(zip(grads, self.model.trainable_weights))
+
+    def _train(self, X_dict, y, lr=None, apply_ewc=False, apply_agem=False, freeze_features=False):
         if lr is not None:
             self._set_lr(lr)
         # Build per-sample class weights array
         sample_weights = np.where(y.ravel() == 1, CLASS_WEIGHT[1], CLASS_WEIGHT[0]).astype(np.float32)
         
+        freeze = tf.constant(freeze_features, dtype=tf.bool)
+        
         if apply_ewc and hasattr(self, 'fisher_matrix'):
             self._train_ewc_step(
                 X_dict, y, sample_weights, 
                 self.fisher_matrix, self.opt_weights, 
-                tf.constant(self._ewc_lambda, dtype=tf.float32)
+                tf.constant(self._ewc_lambda, dtype=tf.float32),
+                freeze
             )
             
         elif apply_agem and self.memory and self._memory_size() > 0:
             X_ref, y_ref = self.memory.sample(min(32, self._memory_size()))
             ref_weights = np.where(y_ref.ravel() == 1, CLASS_WEIGHT[1], CLASS_WEIGHT[0]).astype(np.float32)
-            self._train_agem_step(X_dict, y, sample_weights, X_ref, y_ref, ref_weights)
+            self._train_agem_step(X_dict, y, sample_weights, X_ref, y_ref, ref_weights, freeze)
             
         else:
-            self.model.train_on_batch(X_dict, y, sample_weight=sample_weights)
+            self._train_standard_step(X_dict, y, sample_weights, freeze)
 
     def _compute_fisher_fast(self, batch_size=64):
         if not self.memory or self._memory_size() == 0:
@@ -323,18 +372,43 @@ class ContinualLearner:
                   if bootstrap_key is not None else None)
         print("Bootstrapping model..." if cached is None
               else "Bootstrapping (reusing cached weights)...")
-        for _ in range(1000):  
-            X, y = generator.generate_batch(batch_size)
-            if cached is None:
-                self._train(X, y)
-            if self.memory:
-                for i in range(batch_size):
-                    x_i = {k: v[i] for k, v in X.items()}
-                    self.memory.add(x_i, y[i])
-        if cached is not None:
+        if cached is None:
+            X_boot = {k: [] for k in generator.cat_cols + ['continuous']}
+            y_boot = []
+            
+            for _ in range(250):
+                X, y = generator.generate_batch(batch_size)
+                for k in X:
+                    X_boot[k].append(X[k])
+                y_boot.append(y)
+                
+                if self.memory:
+                    for i in range(batch_size):
+                        x_i = {k: v[i] for k, v in X.items()}
+                        self.memory.add(x_i, y[i])
+                        
+            X_train = {k: np.vstack(v) for k, v in X_boot.items()}
+            y_train = np.vstack(y_boot)
+            
+            print(f"Training offline bootstrap for 5 epochs on {len(y_train)} samples...")
+            self.model.fit(X_train, y_train, epochs=5, batch_size=batch_size, verbose=1,
+                           class_weight=CLASS_WEIGHT)
+                           
+            del X_boot, y_boot, X_train, y_train
+            import gc
+            gc.collect()
+            
+            if bootstrap_key is not None:
+                ContinualLearner._BOOTSTRAP_CACHE[bootstrap_key] = self.model.get_weights()
+        else:
+            for _ in range(250):
+                X, y = generator.generate_batch(batch_size)
+                if self.memory:
+                    for i in range(batch_size):
+                        x_i = {k: v[i] for k, v in X.items()}
+                        self.memory.add(x_i, y[i])
             self.model.set_weights(cached)
-        elif bootstrap_key is not None:
-            ContinualLearner._BOOTSTRAP_CACHE[bootstrap_key] = self.model.get_weights()
+            
         for batch_idx in tqdm(range(num_batches), desc=self.config_name):
             batch_start_time = time.perf_counter()
 
@@ -434,11 +508,11 @@ class ContinualLearner:
                             X_combined = {k: X_combined[k][indices] for k in X_combined.keys()}
                             y_combined = y_combined[indices]
                             self._train(X_combined, y_combined, lr=cosine_lr,
-                                        apply_ewc=self.use_ewc, apply_agem=self.use_agem)
+                                        apply_ewc=self.use_ewc, apply_agem=self.use_agem, freeze_features=True)
                         else:
-                            self._train(X, y, lr=cosine_lr, apply_ewc=self.use_ewc, apply_agem=self.use_agem)
+                            self._train(X, y, lr=cosine_lr, apply_ewc=self.use_ewc, apply_agem=self.use_agem, freeze_features=True)
                     else:
-                        self._train(X, y, lr=cosine_lr, apply_ewc=self.use_ewc, apply_agem=self.use_agem)
+                        self._train(X, y, lr=cosine_lr, apply_ewc=self.use_ewc, apply_agem=self.use_agem, freeze_features=True)
 
                 self._set_lr(BASE_LR)
 

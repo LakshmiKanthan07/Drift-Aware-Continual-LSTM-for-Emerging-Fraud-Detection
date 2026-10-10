@@ -58,6 +58,9 @@ This project addresses both challenges by combining:
   - **Severity-Adaptive EWC**: Dynamic Fisher information regularizer ($\lambda \in [500, 8000]$).
 - **Business-Aware Adaptive Thresholding**:
   - Dynamically tunes decision thresholds across a moving window to maximize net monetary savings ($\$500$ saved per True Positive vs. $\$10$ cost per False Positive + $F_{1.5}$ score).
+- **High-Performance Execution**:
+  - **Vectorized Replay Buffers** utilizing pure NumPy indexing instead of Python loops, speeding up A-GEM gradients.
+  - **JIT Compilation (`@tf.function`)** and mixed-precision tensors to aggressively optimize batch latency in the live stream loop.
 - **Interactive Streamlit & Plotly Dashboard**:
   - Real-time visualization of streaming metrics, drift triggers, cumulative savings, multi-seed variance bands, and multi-model benchmark comparisons.
 
@@ -134,6 +137,8 @@ This project addresses both challenges by combining:
 ---
 
 ## 🧠 Continual Learning Strategies
+
+To guarantee fair evaluation, all models undergo **Offline Bootstrapping**: a 5-epoch training phase on the first 16,000 transactions (250 batches) before entering the strictly one-pass online streaming phase.
 
 | Strategy | Description | Key Advantage |
 | :--- | :--- | :--- |
