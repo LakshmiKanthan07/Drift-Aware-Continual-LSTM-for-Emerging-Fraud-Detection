@@ -187,7 +187,18 @@ To guarantee fair evaluation, all models undergo **Offline Bootstrapping**: a 5-
 │   ├── continual_learner.py      # Core simulation engine, A-GEM, EWC, and training orchestrator
 │   ├── baselines.py              # Classical ML and Static MLP Baselines
 │   ├── model_evaluator.py        # Checkpoint tracker and metric logging
-│   └── dashboard.py              # Interactive Streamlit & Plotly analytics dashboard
+│   ├── dashboard.py              # Interactive Streamlit & Plotly analytics dashboard
+│   └── plot_timings.py           # Script to plot batch latencies across models
+├── literature review/            # Literature review documents and papers
+├── reports and ppts/             # Project reports and presentations
+├── graphify-out/                 # Knowledge graph and project map outputs
+├── papers_list.txt               # List of literature review papers
+├── papers_summary.json           # Summary of reviewed papers
+├── sequence_diagram.png          # System architecture sequence diagram
+├── gantt_chart_8_weeks.png       # Project timeline and Gantt chart
+├── END SEMESTER PROJECT Plan.pdf # Comprehensive project plan document
+├── DL.pdf                        # Deep Learning reference document
+├── chuma.py                      # Scratch script for Gantt chart generation
 ├── requirements.txt              # Project dependencies
 └── README.md                     # Documentation
 ```
@@ -257,6 +268,13 @@ Once simulation metrics are logged to `data/`, start the Streamlit web dashboard
 streamlit run src/dashboard.py
 ```
 Open [http://localhost:8501](http://localhost:8501) in your browser to inspect real-time metric curves, drift event alignments, economic savings, and ablation comparisons.
+
+### 4. Analyze Execution Timings
+To visualize and compare the batch processing latency across different model configurations:
+```bash
+python src/plot_timings.py
+```
+This generates a `batch_latencies.png` chart inside the `data/` directory.
 
 ---
 

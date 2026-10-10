@@ -391,8 +391,7 @@ class ContinualLearner:
             y_train = np.vstack(y_boot)
             
             print(f"Training offline bootstrap for 5 epochs on {len(y_train)} samples...")
-            self.model.fit(X_train, y_train, epochs=5, batch_size=batch_size, verbose=1,
-                           class_weight=CLASS_WEIGHT)
+            self.model.fit(X_train, y_train, epochs=5, batch_size=batch_size, verbose=1)
                            
             del X_boot, y_boot, X_train, y_train
             import gc
@@ -551,7 +550,7 @@ def run_simulation():
     configs = [
         {'name': 'Static Baseline LSTM', 'detector': None, 'memory': None, 'is_classical': False},
         {'name': 'Config A (ADWIN + Random)', 'detector': 'adwin', 'memory': 'random', 'is_classical': False},
-        {'name': 'Config F (Dual Drift + Prioritized + A-GEM)', 'detector': 'dual', 'memory': 'prioritized', 'is_classical': False, 'use_agem': True},
+        {'name': 'Config F (Dual Drift + Balanced + A-GEM)', 'detector': 'dual', 'memory': 'balanced', 'is_classical': False, 'use_agem': True},
         {'name': 'Config G (Dual Drift + Random + A-GEM)', 'detector': 'dual', 'memory': 'random', 'is_classical': False, 'use_agem': True},
     ]
 
@@ -565,7 +564,7 @@ def run_simulation():
     if int(os.environ.get('INJECT_DRIFT', 1)):
         GT_DRIFT_BATCHES = [150, 300, 450]
         generator.set_drift([BOOTSTRAP_TX + b * BATCH_SIZE for b in GT_DRIFT_BATCHES],
-                            magnitude=float(os.environ.get('DRIFT_MAGNITUDE', 1.0)))
+                            magnitude=float(os.environ.get('DRIFT_MAGNITUDE', 3.0)))
         pd.DataFrame({'batch': GT_DRIFT_BATCHES}).to_csv(gt_path, index=False)
     elif os.path.exists(gt_path):
         os.remove(gt_path)

@@ -432,7 +432,11 @@
         "id_10",
         "id_11",
         "DeviceType",
-        "DeviceInfo"
+        "DeviceInfo",
+        "Amount_1H",
+        "Count_1H",
+        "Amount_24H",
+        "Count_24H"
     ],
     "cat_vocab": {
         "ProductCD": 5,
