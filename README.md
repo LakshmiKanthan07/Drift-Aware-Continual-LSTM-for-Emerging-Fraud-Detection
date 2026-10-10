@@ -1,4 +1,4 @@
-# 🛡️ Drift-Aware Continual LSTM for Emerging Fraud Detection
+# Drift-Aware Continual LSTM for Emerging Fraud Detection
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![TensorFlow 2.x](https://img.shields.io/badge/TensorFlow-2.x-orange.svg)](https://tensorflow.org/)
@@ -9,7 +9,7 @@ An end-to-end continual learning framework designed to detect emerging fraudulen
 
 ---
 
-## 📌 Table of Contents
+## Table of Contents
 - [Overview](#-overview)
 - [Key Features & Innovations](#-key-features--innovations)
 - [System Architecture](#-system-architecture)
@@ -27,7 +27,7 @@ An end-to-end continual learning framework designed to detect emerging fraudulen
 
 ---
 
-## 🌟 Overview
+## Overview
 
 In financial fraud detection, fraudsters continuously alter their tactics to bypass security mechanisms, leading to **concept drift** (covariate shift and posterior distribution shifts). Traditional batch-trained models decay rapidly in production, while naive online fine-tuning causes **catastrophic forgetting** of previously learned legitimate and fraudulent patterns.
 
@@ -39,7 +39,7 @@ This project addresses both challenges by combining:
 
 ---
 
-## 🚀 Key Features & Innovations
+## Key Features & Innovations
 
 - **Hybrid Deep Architecture**:
   - **Entity Embeddings** for high-cardinality categorical features (card types, address, device IDs).
@@ -66,7 +66,7 @@ This project addresses both challenges by combining:
 
 ---
 
-## 🏗️ System Architecture
+## System Architecture
 
 ```
                                   Streaming Transactions
@@ -136,7 +136,7 @@ This project addresses both challenges by combining:
 
 ---
 
-## 🧠 Continual Learning Strategies
+## Continual Learning Strategies
 
 To guarantee fair evaluation, all models undergo **Offline Bootstrapping**: a 5-epoch training phase on the first 16,000 transactions (250 batches) before entering the strictly one-pass online streaming phase.
 
@@ -149,7 +149,7 @@ To guarantee fair evaluation, all models undergo **Offline Bootstrapping**: a 5-
 
 ---
 
-## 📡 Drift Detection Mechanisms
+## Drift Detection Mechanisms
 
 1. **ADWIN (Adaptive Windowing)**:
    - Statistically compares sub-windows of real-time metrics (**F2-score** and **PR-AUC**) with bounds computed via Hoeffding's inequality.
@@ -163,7 +163,7 @@ To guarantee fair evaluation, all models undergo **Offline Bootstrapping**: a 5-
 
 ---
 
-## 📂 Project Structure
+## Project Structure
 
 ```text
 ├── data/                         # Processed datasets, ground-truth drift logs, and metric CSVs
@@ -194,7 +194,7 @@ To guarantee fair evaluation, all models undergo **Offline Bootstrapping**: a 5-
 
 ---
 
-## ⚙️ Installation
+## Installation
 
 ### 1. Prerequisites
 - Python 3.9, 3.10, or 3.11
@@ -221,7 +221,7 @@ pip install -r requirements.txt
 
 ---
 
-## 💻 Quickstart & Usage
+## Quickstart & Usage
 
 ### 1. Data Preprocessing (Optional for IEEE-CIS dataset)
 If using the raw IEEE-CIS Fraud Detection dataset (`train_transaction.csv` and `train_identity.csv` placed in `data/`):
@@ -260,7 +260,7 @@ Open [http://localhost:8501](http://localhost:8501) in your browser to inspect r
 
 ---
 
-## 📊 Evaluation & Metrics
+## Evaluation & Metrics
 
 The streaming evaluation pipeline logs batch-level performance metrics:
 
@@ -275,7 +275,7 @@ The streaming evaluation pipeline logs batch-level performance metrics:
 
 ---
 
-## ⚙️ Configuration Reference
+## Configuration Reference
 
 Key hyperparameters defined in [continual_learner.py](file:///d:/Priyan/amrita/5th%20semester/deep-learning/project/src/continual_learner.py):
 
@@ -294,7 +294,7 @@ Key hyperparameters defined in [continual_learner.py](file:///d:/Priyan/amrita/5
 
 ---
 
-## 📜 License & Acknowledgements
+## License & Acknowledgements
 
 - **License**: Released under the [MIT License](LICENSE).
 - **Research & References**:
