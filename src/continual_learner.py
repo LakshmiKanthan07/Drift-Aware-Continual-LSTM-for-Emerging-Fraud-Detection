@@ -64,20 +64,20 @@ class AdaptiveThreshold:
         best_thresh = self.current_threshold
         best_score = -1e9
 
-        # Rate-limit threshold movement: allow larger step (0.12) upon drift alert
-        # so the model realigns immediately without lagging for 50 batches.
-        MAX_STEP = 0.12 if is_drift else 0.06
-        lo = max(0.10, self.current_threshold - MAX_STEP)
-        hi = min(0.65, self.current_threshold + MAX_STEP)
+        # Target threshold window [0.12, 0.24] to keep recall high (~0.65+)
+        # while suppressing false alarms and optimizing F2 (fraud catch rate).
+        MAX_STEP = 0.08 if is_drift else 0.04
+        lo = max(0.12, self.current_threshold - MAX_STEP)
+        hi = min(0.24, self.current_threshold + MAX_STEP)
 
-        for thresh in np.arange(lo, hi + 1e-9, 0.02):
+        for thresh in np.arange(lo, hi + 1e-9, 0.01):
             preds = (y_prob > thresh).astype(int)
             tp = int(np.sum((preds == 1) & (y_true == 1)))
             fp = int(np.sum((preds == 1) & (y_true == 0)))
             
             savings = tp * 500 - fp * 10
-            f1_5 = fbeta_score(y_true, preds, beta=1.5, zero_division=0)
-            combined_score = savings + 100 * f1_5
+            f2 = fbeta_score(y_true, preds, beta=2.0, zero_division=0)
+            combined_score = savings + 200 * f2
             if combined_score > best_score:
                 best_score = combined_score
                 best_thresh = thresh
@@ -107,7 +107,7 @@ class ContinualLearner:
         elif memory_type == 'balanced':
             self.memory = BalancedReplayBuffer()
         elif memory_type == 'prioritized':
-            self.memory = PrioritizedReplayBuffer(capacity=5000, fraud_ratio=0.5, alpha=0.6)
+            self.memory = PrioritizedReplayBuffer(capacity=5000, fraud_ratio=0.25, alpha=0.6)
         else:
             self.memory = None
             
@@ -957,14 +957,15 @@ def run_simulation():
             if not required.issubset(df.columns):
                 continue
             metrics_summary[cname] = {
-                'PR-AUC':  round(tail['pr_auc'].mean(),   3),
-                'ROC-AUC': round(tail['roc_auc'].mean(),  3),
-                'Recall':  round(tail['recall'].mean(),   3),
-                'F1':      round(tail['f1'].mean(),       3),
+                'PR-AUC':    round(tail['pr_auc'].mean(),   3),
+                'ROC-AUC':   round(tail['roc_auc'].mean(),  3),
+                'Recall':    round(tail['recall'].mean(),   3),
+                'Precision': round(tail['precision'].mean(),3),
+                'F1':        round(tail['f1'].mean(),       3),
             }
 
     if metrics_summary:
-        metric_names = ['PR-AUC', 'ROC-AUC', 'Recall', 'F1']
+        metric_names = ['PR-AUC', 'ROC-AUC', 'Recall', 'Precision', 'F1']
         config_names = list(metrics_summary.keys())
         x = np.arange(len(metric_names))
         n_configs = len(config_names)
@@ -1003,6 +1004,26 @@ def run_simulation():
         plt.savefig(os.path.join(DATA_DIR, 'metric_comparison_bar.png'), dpi=150)
         plt.close()
         print(f"\n[SUCCESS] Charts saved to {DATA_DIR}")
+
+        print("\n" + "=" * 80)
+        print("  STREAM-WIDE PERFORMANCE & BUSINESS VALUE SUMMARY (All 40,000 Transactions)")
+        print("=" * 80)
+        for conf in configs:
+            cname = conf['name']
+            safe = (cname.replace(' ', '_').replace('(', '').replace(')', '').replace('+', 'and'))
+            mfile = os.path.join(DATA_DIR, f'{safe}_metrics.csv')
+            if os.path.exists(mfile):
+                df = pd.read_csv(mfile)
+                total_sav = int(df['savings'].sum()) if 'savings' in df.columns else 0
+                mean_f1 = df['f1'].mean() if 'f1' in df.columns else 0.0
+                mean_f2 = df['f2'].mean() if 'f2' in df.columns else 0.0
+                mean_prec = df['precision'].mean() if 'precision' in df.columns else 0.0
+                mean_rec = df['recall'].mean() if 'recall' in df.columns else 0.0
+                mean_prauc = df['pr_auc'].mean() if 'pr_auc' in df.columns else 0.0
+                print(f"[{cname}]")
+                print(f"   Net Financial Savings: ${total_sav:,}")
+                print(f"   Stream-wide F1: {mean_f1:.3f} | F2: {mean_f2:.3f} | Precision: {mean_prec:.3f} | Recall: {mean_rec:.3f} | PR-AUC: {mean_prauc:.3f}")
+        print("=" * 80 + "\n")
 
 if __name__ == '__main__':
     run_simulation()

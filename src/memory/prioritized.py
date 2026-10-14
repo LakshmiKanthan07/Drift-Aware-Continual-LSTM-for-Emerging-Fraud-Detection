@@ -16,7 +16,7 @@ class PrioritizedReplayBuffer:
         alpha (float): Priority exponent. alpha=0 → uniform; alpha=1 → fully prioritized.
     """
 
-    def __init__(self, capacity=5000, fraud_ratio=0.5, alpha=0.6):
+    def __init__(self, capacity=5000, fraud_ratio=0.25, alpha=0.6):
         self.capacity = capacity
         self.fraud_ratio = fraud_ratio
         self.alpha = alpha
