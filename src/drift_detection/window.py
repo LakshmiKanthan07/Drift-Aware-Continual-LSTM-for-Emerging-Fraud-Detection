@@ -3,7 +3,7 @@ import numpy as np
 
 
 class WindowDriftDetector:
-    def __init__(self, window_size=60, min_window=20, threshold_drop=0.15, cooldown=30):
+    def __init__(self, window_size=50, min_window=25, threshold_drop=0.20, cooldown=50):
         """
         Detects drift by monitoring per-batch recall over a sliding window.
 

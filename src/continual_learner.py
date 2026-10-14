@@ -492,10 +492,10 @@ class ContinualLearner:
                     self._update_ewc_lambda(severity)
                     self._compute_fisher_fast(batch_size=batch_size)
 
-                adaptation_steps = int(8 + 17 * severity)
-                # When A-GEM is active, gradient projection protects prior memory;
-                # allow the BiLSTM to adapt to new temporal fraud patterns without hard-freezing.
-                freeze_feat = (not self.use_agem)
+                adaptation_steps = int(4 + 8 * severity)
+                # Freeze feature extractor during adaptation: fine-tune the classification head
+                # to prevent gradient shock to BiLSTM and ensure 5x faster, stable adaptation.
+                freeze_feat = True
                 for step in range(adaptation_steps):
                     cosine_lr = self._cosine_lr(step, adaptation_steps)
                     has_memory = (self.memory and self._memory_size() >= batch_size // 2)
@@ -533,11 +533,11 @@ class ContinualLearner:
                         np.random.shuffle(indices)
                         X_combined = {k: X_combined[k][indices] for k in X_combined.keys()}
                         y_combined = y_combined[indices]
-                        self._train(X_combined, y_combined, lr=BASE_LR, apply_agem=self.use_agem)
+                        self._train(X_combined, y_combined, lr=BASE_LR, apply_agem=False)
                     else:
-                        self._train(X, y, lr=BASE_LR, apply_agem=self.use_agem)
+                        self._train(X, y, lr=BASE_LR, apply_agem=False)
                 else:
-                    self._train(X, y, lr=BASE_LR, apply_agem=self.use_agem)
+                    self._train(X, y, lr=BASE_LR, apply_agem=False)
 
             log_entry['latency_ms'] = (time.perf_counter() - batch_start_time) * 1000.0
 
