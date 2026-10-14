@@ -105,7 +105,7 @@ class PrioritizedReplayBuffer:
         if not batch:
             return {}, np.array([])
 
-        y_batch = np.array([item[1] for item in batch]).ravel()
+        y_batch = np.array([item[1] for item in batch]).reshape(-1, 1)
         keys = batch[0][0].keys()
         X_batch = {k: np.array([item[0][k] for item in batch]) for k in keys}
 

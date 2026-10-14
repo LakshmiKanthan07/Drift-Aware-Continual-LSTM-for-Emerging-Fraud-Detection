@@ -502,6 +502,7 @@ class ContinualLearner:
                     if has_memory:
                         X_mem, y_mem = self.memory.sample(batch_size // 2)
                         if len(y_mem) > 0:
+                            y_mem = np.reshape(y_mem, (-1, 1))
                             # 50% current, 50% replay
                             half = batch_size // 2
                             X_combined = {k: np.concatenate((X[k][:half], X_mem[k])) for k in X.keys()}
@@ -525,6 +526,7 @@ class ContinualLearner:
                 if self.memory and self._memory_size() >= batch_size:
                     X_mem, y_mem = self.memory.sample(batch_size)
                     if len(y_mem) > 0:
+                        y_mem = np.reshape(y_mem, (-1, 1))
                         X_combined = {k: np.concatenate((X[k], X_mem[k])) for k in X.keys()}
                         y_combined = np.concatenate((y, y_mem))
                         indices = np.arange(len(y_combined))
@@ -696,6 +698,7 @@ class ContinualLearner:
                     if has_mem:
                         X_mem, y_mem = self.memory.sample(half)
                         if len(y_mem) > 0:
+                            y_mem = np.reshape(y_mem, (-1, 1))
                             X_comb = {k: np.concatenate((X_mb[k][:half], X_mem[k]))
                                       for k in X_mb.keys()}
                             y_comb = np.concatenate((y_mb[:half], y_mem))
@@ -719,9 +722,10 @@ class ContinualLearner:
                 if self.memory and self._memory_size() >= mini_batch_size:
                     X_mem, y_mem = self.memory.sample(mini_batch_size)
                     if len(y_mem) > 0:
+                        y_mem = np.reshape(y_mem, (-1, 1))
                         X_comb = {k: np.concatenate((X_mb[k], X_mem[k]))
                                   for k in X_mb.keys()}
-                        y_comb = np.concatenate((y_mb, np.squeeze(y_mem)))
+                        y_comb = np.concatenate((y_mb, y_mem))
                         idx_s  = np.random.permutation(len(y_comb))
                         X_comb = {k: X_comb[k][idx_s] for k in X_comb}
                         y_comb = y_comb[idx_s]
