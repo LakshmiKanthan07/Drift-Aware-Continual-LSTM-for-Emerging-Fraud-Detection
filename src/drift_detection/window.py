@@ -3,26 +3,18 @@ import numpy as np
 
 
 class WindowDriftDetector:
-    def __init__(self, window_size=200, threshold_drop=0.15, cooldown=50):
+    def __init__(self, window_size=60, min_window=20, threshold_drop=0.15, cooldown=30):
         """
         Detects drift by monitoring per-batch recall over a sliding window.
 
-        Improvements over v1:
-        - Larger window (200 batches) → more stable mean recall estimate,
-          preventing false alarms from natural batch-to-batch variance.
-        - Higher threshold_drop (0.15) → only genuine large drops trigger drift,
-          not normal noise in sparse-fraud batches.
-        - Cooldown period (50 batches) → after a drift event, detection is
-          suspended for 50 batches so the model can stabilize before the
-          next alert. This prevents the 'chain-trigger' problem where one
-          drift spawns dozens of consecutive re-adaptations.
-
         Args:
             window_size:     Number of recent batches in the sliding window.
+            min_window:      Minimum samples in window before testing for drift.
             threshold_drop:  Absolute recall drop from historical max to flag.
             cooldown:        Batches to wait after a drift before re-enabling detection.
         """
         self.window_size    = window_size
+        self.min_window     = min_window
         self.threshold_drop = threshold_drop
         self.cooldown       = cooldown
 
@@ -44,8 +36,8 @@ class WindowDriftDetector:
 
         self.window.append(batch_recall)
 
-        # Need a full window before making a decision
-        if len(self.window) < self.window_size:
+        # Need at least min_window before making a decision
+        if len(self.window) < self.min_window:
             return False
 
         current_recall = float(np.mean(self.window))

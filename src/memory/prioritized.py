@@ -55,10 +55,12 @@ class PrioritizedReplayBuffer:
             buffer.append(entry)
             priorities[curr_len] = priority_val
         else:
-            idx = random.randint(0, self.half_capacity - 1)
-            if priority_val >= priorities[idx] or random.random() < 0.5:
-                buffer[idx] = entry
-                priorities[idx] = priority_val
+            # Tournament selection: find lowest priority among 4 random entries to evict
+            candidates = [random.randint(0, self.half_capacity - 1) for _ in range(4)]
+            min_idx = min(candidates, key=lambda i: priorities[i])
+            if priority_val >= priorities[min_idx]:
+                buffer[min_idx] = entry
+                priorities[min_idx] = priority_val
 
     def sample(self, batch_size):
         """
@@ -103,7 +105,7 @@ class PrioritizedReplayBuffer:
         if not batch:
             return {}, np.array([])
 
-        y_batch = np.array([item[1] for item in batch])
+        y_batch = np.array([item[1] for item in batch]).ravel()
         keys = batch[0][0].keys()
         X_batch = {k: np.array([item[0][k] for item in batch]) for k in keys}
 

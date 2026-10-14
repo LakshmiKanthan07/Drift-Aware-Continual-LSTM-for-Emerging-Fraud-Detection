@@ -54,7 +54,9 @@ def build_lstm_model(seq_len, num_cont_features, cat_vocab_dict, learning_rate=0
     # Dynamic feature size after concatenation
     total_features = num_cont_features + sum([min(50, (v + 1) // 2) for v in cat_vocab_dict.values()])
 
-    x = BatchNormalization(name='input_bn')(x)
+    # LayerNorm instead of BatchNorm: normalises per-sample, per-timestep so
+    # running statistics are never poisoned by drifted data distributions.
+    x = LayerNormalization(name='input_ln')(x)
 
     # Attention Block
     x_attn = channel_attention(x, total_features, reduction_ratio=16)
@@ -116,7 +118,9 @@ def build_lstm_model(seq_len, num_cont_features, cat_vocab_dict, learning_rate=0
     optimizer = Adam(learning_rate=learning_rate, clipnorm=1.0)
     model.compile(
         optimizer=optimizer,
-        loss=tf.keras.losses.BinaryFocalCrossentropy(gamma=2.0, alpha=0.80),
+        # alpha=0.92: strongly up-weights the rare fraud class in the focal loss,
+        # directly suppressing false-positive rate and lifting precision.
+        loss=tf.keras.losses.BinaryFocalCrossentropy(gamma=2.0, alpha=0.92),
         metrics=[
             'accuracy',
             tf.keras.metrics.Precision(name='precision'),

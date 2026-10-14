@@ -112,6 +112,39 @@ class RealtimeDataGenerator:
         
         return batch_dict, y_batch
         
+    def generate_one(self):
+        """Yield exactly one transaction at a time.
+
+        Returns x_dict with each value shaped (1, seq_len, *) and y shaped (1, 1).
+        Shares the same card-history state as generate_batch() so both can be
+        used interchangeably in the same simulation run.
+        """
+        if self.current_index >= self.total_samples:
+            self.current_index = 0
+            self.card_hist_idx.clear()
+
+        idx = self.current_index
+        card = self.cards[idx]
+        hist = self.card_hist_idx[card]
+        hist.append(idx)
+
+        seq_indices = np.full((1, self.seq_len), self.pad_idx, dtype=np.int32)
+        hist_list = list(hist)
+        seq_indices[0, -len(hist_list):] = hist_list
+
+        x_cont = self.X_cont[seq_indices]          # (1, seq_len, num_cont_features)
+        offset = self._current_offset(idx)
+        if offset is not None:
+            x_cont = x_cont + offset
+
+        x_dict = {'continuous': x_cont}
+        for col in self.cat_cols:
+            x_dict[col] = self.X_cat[col][seq_indices]  # (1, seq_len)
+
+        y = self.y_all[idx: idx + 1].reshape(1, 1)
+        self.current_index += 1
+        return x_dict, y
+
     def reset(self):
         """Resets the generator state to begin streaming from the start."""
         self.current_index = 0

@@ -28,16 +28,14 @@ data_dir = os.path.join(os.path.dirname(__file__), '..', 'data')
 BASELINE = 'Static_Baseline_LSTM'
 
 PALETTE = {
-    'Static_Baseline_LSTM':                    '#e74c3c',
-    'Config_A_ADWIN_and_Random':               '#3498db',
-    'Config_F_Dual_Drift_and_Prioritized_and_A-GEM': '#d35400',
-    'Config_G_Dual_Drift_and_Random_and_A-GEM': '#2ecc71',
+    'Static_Baseline_LSTM':                         '#e74c3c',
+    'Config_A_ADWIN_and_Random':                    '#3498db',
+    'Config_F_Dual_Drift_and_Prioritized_and_A-GEM': '#2ecc71',
 }
 LABELS = {
-    'Static_Baseline_LSTM':                    'Static Baseline LSTM',
-    'Config_A_ADWIN_and_Random':               'Config A (ADWIN + Random)',
+    'Static_Baseline_LSTM':                         'Static Baseline LSTM',
+    'Config_A_ADWIN_and_Random':                    'Config A (ADWIN + Random)',
     'Config_F_Dual_Drift_and_Prioritized_and_A-GEM': 'Config F (Dual Drift + Prioritized + A-GEM)',
-    'Config_G_Dual_Drift_and_Random_and_A-GEM': 'Config G (Dual Drift + Random + A-GEM)',
 }
 METRIC_OPTIONS = ['pr_auc', 'roc_auc', 'f1', 'f2', 'recall', 'precision',
                   'precision_at_1_percent', 'accuracy', 'kappa', 'savings']

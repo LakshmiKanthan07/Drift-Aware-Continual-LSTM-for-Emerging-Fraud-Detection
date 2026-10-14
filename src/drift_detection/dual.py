@@ -3,7 +3,7 @@ from .window import WindowDriftDetector
 
 
 class DualDriftDetector:
-    def __init__(self, adwin_delta=0.002, window_size=200, threshold_drop=0.15, cooldown=50):
+    def __init__(self, adwin_delta=0.002, window_size=60, threshold_drop=0.15, cooldown=30):
         """
         Upgraded Dual Drift Detector using 3 signals:
           - ADWIN on F2-score (gradual distribution drift)
@@ -16,6 +16,7 @@ class DualDriftDetector:
         self.adwin_f2    = ADWINDriftDetector(delta=adwin_delta)
         self.adwin_prauc = ADWINDriftDetector(delta=adwin_delta)
         self.window      = WindowDriftDetector(window_size=window_size,
+                                               min_window=20,
                                                threshold_drop=threshold_drop,
                                                cooldown=cooldown)
         self.last_drift_severity = 0.0

@@ -50,8 +50,9 @@ class AdaptiveThreshold:
         self.y_true_cache.extend(y_true_batch.flatten())
         self.y_prob_cache.extend(y_prob_batch.flatten())
 
-    def update_threshold(self):
-        if len(self.y_true_cache) < 200:
+    def update_threshold(self, is_drift=False):
+        min_samples = 80 if is_drift else 200
+        if len(self.y_true_cache) < min_samples:
             return self.current_threshold  
 
         y_true = np.array(self.y_true_cache)
@@ -61,13 +62,13 @@ class AdaptiveThreshold:
             return self.current_threshold
 
         best_thresh = self.current_threshold
-        best_score = 0.0
+        best_score = -1e9
 
-        # Rate-limit threshold movement (+/- MAX_STEP per update) to avoid
-        # post-drift threshold spikes that wreck precision.
-        MAX_STEP = 0.06
+        # Rate-limit threshold movement: allow larger step (0.12) upon drift alert
+        # so the model realigns immediately without lagging for 50 batches.
+        MAX_STEP = 0.12 if is_drift else 0.06
         lo = max(0.10, self.current_threshold - MAX_STEP)
-        hi = min(0.60, self.current_threshold + MAX_STEP)
+        hi = min(0.65, self.current_threshold + MAX_STEP)
 
         for thresh in np.arange(lo, hi + 1e-9, 0.02):
             preds = (y_prob > thresh).astype(int)
@@ -453,15 +454,15 @@ class ContinualLearner:
 
             # --- Add to memory (with priority for PrioritizedReplayBuffer) ---
             if self.memory:
-                is_prioritized = isinstance(self.memory, PrioritizedReplayBuffer)
                 for i in range(batch_size):
                     x_i = {k: v[i] for k, v in X.items()}
-                    if is_prioritized:
-                        # Priority = prediction error so hard/borderline samples replay more
+                    y_i = np.atleast_1d(y[i])
+                    if isinstance(self.memory, PrioritizedReplayBuffer):
                         priority = abs(float(y_flat[i]) - float(preds[i])) + 1e-5
-                        self.memory.add(x_i, y[i], priority=priority)
+                        prb: PrioritizedReplayBuffer = self.memory
+                        prb.add(x_i, y_i, priority=priority)
                     else:
-                        self.memory.add(x_i, y[i])
+                        self.memory.add(x_i, y_i)
 
             # --- Drift detection using 3 signals ---
             # f2 was already computed in _batch_metrics above; reuse it.
@@ -492,6 +493,9 @@ class ContinualLearner:
                     self._compute_fisher_fast(batch_size=batch_size)
 
                 adaptation_steps = int(8 + 17 * severity)
+                # When A-GEM is active, gradient projection protects prior memory;
+                # allow the BiLSTM to adapt to new temporal fraud patterns without hard-freezing.
+                freeze_feat = (not self.use_agem)
                 for step in range(adaptation_steps):
                     cosine_lr = self._cosine_lr(step, adaptation_steps)
                     has_memory = (self.memory and self._memory_size() >= batch_size // 2)
@@ -507,13 +511,15 @@ class ContinualLearner:
                             X_combined = {k: X_combined[k][indices] for k in X_combined.keys()}
                             y_combined = y_combined[indices]
                             self._train(X_combined, y_combined, lr=cosine_lr,
-                                        apply_ewc=self.use_ewc, apply_agem=self.use_agem, freeze_features=True)
+                                        apply_ewc=self.use_ewc, apply_agem=self.use_agem, freeze_features=freeze_feat)
                         else:
-                            self._train(X, y, lr=cosine_lr, apply_ewc=self.use_ewc, apply_agem=self.use_agem, freeze_features=True)
+                            self._train(X, y, lr=cosine_lr, apply_ewc=self.use_ewc, apply_agem=self.use_agem, freeze_features=freeze_feat)
                     else:
-                        self._train(X, y, lr=cosine_lr, apply_ewc=self.use_ewc, apply_agem=self.use_agem, freeze_features=True)
+                        self._train(X, y, lr=cosine_lr, apply_ewc=self.use_ewc, apply_agem=self.use_agem, freeze_features=freeze_feat)
 
                 self._set_lr(BASE_LR)
+                if use_adaptive_thresh:
+                    self.adaptive_threshold.update_threshold(is_drift=True)
 
             else:
                 if self.memory and self._memory_size() >= batch_size:
@@ -535,6 +541,201 @@ class ContinualLearner:
 
         return pd.DataFrame(self.metrics_log), self.drift_events
 
+    # ------------------------------------------------------------------
+    # Online (per-transaction) processing
+    # ------------------------------------------------------------------
+    def process_stream_online(self, generator, num_transactions,
+                              mini_batch_size=32, label_delay=5,
+                              use_adaptive_thresh=True, bootstrap_key=None):
+        """True online mode: score every transaction individually, accumulate
+        into a mini-batch of `mini_batch_size` confirmed (label-delayed)
+        transactions, then run drift detection + a single training step.
+
+        Scoring latency is per-transaction (~3-5 ms each).
+        Gradient updates stay stable because training always uses
+        `mini_batch_size` samples (never a single noisy gradient).
+        """
+        # --- Bootstrap (reuse the same cache as process_stream) ---
+        label_delay = int(label_delay)
+        print(f"\nStarting ONLINE simulation for: {self.config_name}")
+        cached = (ContinualLearner._BOOTSTRAP_CACHE.get(bootstrap_key)
+                  if bootstrap_key is not None else None)
+        print("Bootstrapping model..." if cached is None
+              else "Bootstrapping (reusing cached weights)...")
+
+        boot_txs = 250 * mini_batch_size
+        if cached is None:
+            X_boot = {k: [] for k in generator.cat_cols + ['continuous']}
+            y_boot = []
+            for _ in range(boot_txs):
+                x_i, y_i = generator.generate_one()
+                for k in x_i:
+                    X_boot[k].append(x_i[k])
+                y_boot.append(y_i)
+                if self.memory:
+                    self.memory.add({k: x_i[k][0] for k in x_i}, y_i[0])
+            X_train = {k: np.concatenate(v, axis=0) for k, v in X_boot.items()}
+            y_train = np.concatenate(y_boot, axis=0)
+            print(f"Training offline bootstrap for 5 epochs on {len(y_train)} samples...")
+            self.model.fit(X_train, y_train, epochs=5,
+                           batch_size=mini_batch_size, verbose=1)
+            del X_boot, y_boot, X_train, y_train
+            import gc; gc.collect()
+            if bootstrap_key is not None:
+                ContinualLearner._BOOTSTRAP_CACHE[bootstrap_key] = self.model.get_weights()
+        else:
+            for _ in range(boot_txs):
+                x_i, y_i = generator.generate_one()
+                if self.memory:
+                    self.memory.add({k: x_i[k][0] for k in x_i}, y_i[0])
+            self.model.set_weights(cached)
+
+        # --- Streaming loop ---
+        pending      = collections.deque()   # label-delay queue
+        train_buffer = []                    # confirmed transactions awaiting training
+
+        for tx_idx in tqdm(range(num_transactions), desc=self.config_name):
+            tx_start = time.perf_counter()
+
+            # 1. Score this single transaction immediately
+            x_dict, y = generator.generate_one()
+            pred = float(np.asarray(self.model.predict_on_batch(x_dict)).ravel()[0])
+
+            decision_thresh = self.adaptive_threshold.current_threshold
+            pred_binary = int(pred > decision_thresh)
+
+            self.metrics_log.append({
+                'transaction':  tx_idx,
+                'pred_prob':    pred,
+                'pred_binary':  pred_binary,
+                'threshold':    decision_thresh,
+                'latency_ms':   (time.perf_counter() - tx_start) * 1000.0,
+            })
+
+            # 2. Label-delay queue — labels arrive `label_delay` transactions later
+            pending.append((x_dict, y, pred))
+            if len(pending) <= label_delay:
+                continue
+            x_d, y_d, pred_d = pending.popleft()
+            train_buffer.append(({'continuous': x_d['continuous'][0],
+                                   **{k: x_d[k][0] for k in x_d if k != 'continuous'}},
+                                  y_d[0], pred_d))
+
+            # 3. Every mini_batch_size confirmed transactions → train
+            if len(train_buffer) < mini_batch_size:
+                continue
+
+            # Stack mini-batch
+            X_mb = {
+                'continuous': np.stack([t[0]['continuous'] for t in train_buffer], axis=0),
+                **{k: np.stack([t[0][k] for t in train_buffer], axis=0)
+                   for k in train_buffer[0][0] if k != 'continuous'}
+            }
+            y_mb    = np.concatenate([t[1] for t in train_buffer], axis=0)   # (N, 1)
+            preds_mb = np.array([t[2] for t in train_buffer])                # (N,)
+            y_flat   = y_mb.ravel()
+
+            # Adaptive threshold update
+            if use_adaptive_thresh:
+                self.adaptive_threshold.add(y_flat, preds_mb)
+                if tx_idx % (mini_batch_size * 50) == 0:
+                    self.adaptive_threshold.update_threshold()
+
+            # Add confirmed transactions to memory
+            if self.memory:
+                for i in range(len(y_flat)):
+                    x_i = {k: X_mb[k][i] for k in X_mb}
+                    y_i = np.atleast_1d(y_mb[i])
+                    if isinstance(self.memory, PrioritizedReplayBuffer):
+                        priority = abs(float(y_flat[i]) - float(preds_mb[i])) + 1e-5
+                        prb: PrioritizedReplayBuffer = self.memory
+                        prb.add(x_i, y_i, priority=priority)
+                    else:
+                        self.memory.add(x_i, y_i)
+
+            # Compute mini-batch metrics for drift detector
+            preds_bin_mb = (preds_mb > decision_thresh).astype(int)
+            tp = int(np.sum((preds_bin_mb == 1) & (y_flat == 1)))
+            fn = int(np.sum((preds_bin_mb == 0) & (y_flat == 1)))
+            fp = int(np.sum((preds_bin_mb == 1) & (y_flat == 0)))
+            recall_mb = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            f2_mb     = fbeta_score(y_flat, preds_bin_mb, beta=2.0, zero_division=0)
+            pr_auc_mb = (average_precision_score(y_flat, preds_mb)
+                         if np.sum(y_flat) > 0 else 0.0)
+
+            # Drift detection
+            drift_detected = False
+            if self.detector:
+                if isinstance(self.detector, ADWINDriftDetector):
+                    if self.detector.update(f2_mb):
+                        drift_detected = True; self.detector.reset()
+                elif isinstance(self.detector, WindowDriftDetector):
+                    if self.detector.update(recall_mb):
+                        drift_detected = True; self.detector.reset()
+                elif isinstance(self.detector, DualDriftDetector):
+                    if self.detector.update(recall_mb, f2_mb, pr_auc_mb):
+                        drift_detected = True; self.detector.reset()
+
+            # Train
+            if drift_detected:
+                severity = getattr(self.detector, 'last_drift_severity', 0.5)
+                print(f"\n  [!] Online drift at tx {tx_idx}! "
+                      f"(recall={recall_mb:.3f}, f2={f2_mb:.3f}, "
+                      f"severity={severity:.2f}) Adapting...")
+                self.drift_events.append(tx_idx)
+                if self.use_ewc:
+                    self._update_ewc_lambda(severity)
+                    self._compute_fisher_fast(batch_size=mini_batch_size)
+
+                adaptation_steps = int(8 + 17 * severity)
+                freeze_feat = (not self.use_agem)
+                for step in range(adaptation_steps):
+                    cosine_lr = self._cosine_lr(step, adaptation_steps)
+                    half = mini_batch_size // 2
+                    has_mem = (self.memory and self._memory_size() >= half)
+                    if has_mem:
+                        X_mem, y_mem = self.memory.sample(half)
+                        if len(y_mem) > 0:
+                            X_comb = {k: np.concatenate((X_mb[k][:half], X_mem[k]))
+                                      for k in X_mb.keys()}
+                            y_comb = np.concatenate((y_mb[:half], y_mem))
+                            idx_s  = np.random.permutation(len(y_comb))
+                            X_comb = {k: X_comb[k][idx_s] for k in X_comb}
+                            y_comb = y_comb[idx_s]
+                            self._train(X_comb, y_comb, lr=cosine_lr,
+                                        apply_ewc=self.use_ewc,
+                                        apply_agem=self.use_agem,
+                                        freeze_features=freeze_feat)
+                            continue
+                    self._train(X_mb, y_mb, lr=cosine_lr,
+                                apply_ewc=self.use_ewc,
+                                apply_agem=self.use_agem,
+                                freeze_features=freeze_feat)
+                self._set_lr(BASE_LR)
+                if use_adaptive_thresh:
+                    self.adaptive_threshold.update_threshold(is_drift=True)
+
+            else:
+                if self.memory and self._memory_size() >= mini_batch_size:
+                    X_mem, y_mem = self.memory.sample(mini_batch_size)
+                    if len(y_mem) > 0:
+                        X_comb = {k: np.concatenate((X_mb[k], X_mem[k]))
+                                  for k in X_mb.keys()}
+                        y_comb = np.concatenate((y_mb, np.squeeze(y_mem)))
+                        idx_s  = np.random.permutation(len(y_comb))
+                        X_comb = {k: X_comb[k][idx_s] for k in X_comb}
+                        y_comb = y_comb[idx_s]
+                        self._train(X_comb, y_comb, lr=BASE_LR,
+                                    apply_agem=self.use_agem)
+                    else:
+                        self._train(X_mb, y_mb, lr=BASE_LR)
+                else:
+                    self._train(X_mb, y_mb, lr=BASE_LR)
+
+            train_buffer.clear()
+
+        return pd.DataFrame(self.metrics_log), self.drift_events
+
 def run_simulation():
     NUM_TRANSACTIONS = 40_000
     BATCH_SIZE       = 64
@@ -548,10 +749,9 @@ def run_simulation():
     tracker = BestModelTracker(primary_metric='f1')
 
     configs = [
-        {'name': 'Static Baseline LSTM', 'detector': None, 'memory': None, 'is_classical': False},
-        {'name': 'Config A (ADWIN + Random)', 'detector': 'adwin', 'memory': 'random', 'is_classical': False},
-        {'name': 'Config F (Dual Drift + Balanced + A-GEM)', 'detector': 'dual', 'memory': 'balanced', 'is_classical': False, 'use_agem': True},
-        {'name': 'Config G (Dual Drift + Random + A-GEM)', 'detector': 'dual', 'memory': 'random', 'is_classical': False, 'use_agem': True},
+        {'name': 'Static Baseline LSTM',                        'detector': None,   'memory': None,        'is_classical': False, 'online': False},
+        {'name': 'Config A (ADWIN + Random)',                   'detector': 'adwin','memory': 'random',     'is_classical': False, 'online': False},
+        {'name': 'Config F (Dual Drift + Prioritized + A-GEM)', 'detector': 'dual', 'memory': 'prioritized','is_classical': False, 'use_agem': True, 'online': False},
     ]
 
     generator = RealtimeDataGenerator(seq_len=10)  
@@ -614,14 +814,25 @@ def run_simulation():
 
                 # Adaptive thresholding is applied to ALL models (including the static
                 # baseline) so that savings differences are not caused by threshold tuning.
-                df, drifts = learner.process_stream(
-                    generator,
-                    num_batches=NUM_BATCHES,
-                    batch_size=BATCH_SIZE,
-                    drift_prob=DRIFT_PROB,
-                    use_adaptive_thresh=True,
-                    bootstrap_key=seed
-                )
+                if conf.get('online', False):
+                    # True online mode: score one transaction at a time
+                    df, drifts = learner.process_stream_online(
+                        generator,
+                        num_transactions=NUM_TRANSACTIONS,
+                        mini_batch_size=32,
+                        label_delay=5,
+                        use_adaptive_thresh=True,
+                        bootstrap_key=seed
+                    )
+                else:
+                    df, drifts = learner.process_stream(
+                        generator,
+                        num_batches=NUM_BATCHES,
+                        batch_size=BATCH_SIZE,
+                        drift_prob=DRIFT_PROB,
+                        use_adaptive_thresh=True,
+                        bootstrap_key=seed
+                    )
                 
             seed_times.append(time.time() - start_time)
 
@@ -644,10 +855,9 @@ def run_simulation():
         print(f"\n[{conf['name']}] Average Batch Latency: {avg_latency:.2f} ms")
         
     COLOR_MAP = {
-        'Static Baseline LSTM':               '#e74c3c',
-        'Config A (ADWIN + Random)':          '#3498db',
-        'Config F (Dual Drift + Prioritized + A-GEM)': '#d35400',
-        'Config G (Dual Drift + Random + A-GEM)': '#2ecc71',
+        'Static Baseline LSTM':                       '#e74c3c',
+        'Config A (ADWIN + Random)':                  '#3498db',
+        'Config F (Dual Drift + Prioritized + A-GEM)': '#2ecc71',
     }
 
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -737,6 +947,11 @@ def run_simulation():
         if os.path.exists(mfile):
             df = pd.read_csv(mfile)
             tail = df.tail(100)
+            # Online-mode CSVs only contain per-transaction scores (no batch
+            # aggregate metrics), so guard against missing columns gracefully.
+            required = {'pr_auc', 'roc_auc', 'recall', 'f1'}
+            if not required.issubset(df.columns):
+                continue
             metrics_summary[cname] = {
                 'PR-AUC':  round(tail['pr_auc'].mean(),   3),
                 'ROC-AUC': round(tail['roc_auc'].mean(),  3),
