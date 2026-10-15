@@ -1,0 +1,13 @@
+================================================================================
+  STREAM-WIDE PERFORMANCE & BUSINESS VALUE SUMMARY (All 40,000 Transactions)    
+================================================================================
+[Static Baseline LSTM]
+   Net Financial Savings: $319,040
+   Stream-wide F1: 0.150 | F2: 0.242 | Precision: 0.096 | Recall: 0.502 | PR-AUC: 0.333
+[Config A (ADWIN + Random)]
+   Net Financial Savings: $312,580
+   Stream-wide F1: 0.144 | F2: 0.233 | Precision: 0.092 | Recall: 0.508 | PR-AUC: 0.364
+[Config F (Dual Drift + Prioritized + A-GEM)]
+   Net Financial Savings: $328,260
+   Stream-wide F1: 0.117 | F2: 0.211 | Precision: 0.068 | Recall: 0.586 | PR-AUC: 0.366
+================================================================================
